@@ -298,6 +298,7 @@ export function createRelayApp({
     }
 
     const pendingAhead = await countPendingTurns(session);
+    await acknowledgeAcceptedTopicMessage(message);
 
     if (hubServer && session.hostId && session.hostId !== botConfig.hostId) {
       await hubServer.queueRemoteJob(session, {
@@ -1407,6 +1408,21 @@ export function createRelayApp({
 
   async function sendLatestReply(chatId, session, options = {}) {
     await telegram.sendLongMessage(chatId, formatLatestReply(session), options);
+  }
+
+  async function acknowledgeAcceptedTopicMessage(message) {
+    try {
+      await telegram.setMessageReaction(
+        message.chat.id,
+        message.message_id,
+        [{ type: "emoji", emoji: "👀" }],
+        {
+          is_big: false,
+        },
+      );
+    } catch {
+      // Best effort only; acceptance must not depend on reaction support.
+    }
   }
 
   function enqueueSession(sessionId, task) {

@@ -772,6 +772,7 @@ test("When a topic message continues a bound session, then relay sends only the 
   await app.initialize();
   await app.handleUpdate({
     message: {
+      message_id: 1,
       text: "continue from telegram",
       chat: { id: -1001, type: "supergroup" },
       from: { id: TEST_USER_ID },
@@ -787,6 +788,12 @@ test("When a topic message continues a bound session, then relay sends only the 
   assert.equal(session?.latestAssistantMessage, "Final reply");
   assert.equal(telegram.calls.replaceProgressMessage.length, 0);
   assert.equal(finalMessage.text, "Final reply");
+  assert.deepEqual(telegram.calls.setMessageReaction.at(-1), {
+    chatId: -1001,
+    messageId: 1,
+    reaction: [{ type: "emoji", emoji: "👀" }],
+    options: { is_big: false },
+  });
   assert.ok(telegram.calls.sendChatAction.length >= 1);
 });
 
@@ -903,6 +910,7 @@ test("When a topic message targets a remote host session, then relay queues the 
   await app.initialize();
   await app.handleUpdate({
     message: {
+      message_id: 1,
       text: "continue remotely",
       chat: { id: -1001, type: "supergroup" },
       from: { id: TEST_USER_ID },
@@ -915,6 +923,12 @@ test("When a topic message targets a remote host session, then relay queues the 
   assert.equal(hubServer.calls[0].session.hostId, "desktop");
   assert.equal(hubServer.calls[0].payload.prompt, "continue remotely");
   assert.equal(hubServer.calls[0].payload.progressMessageId, undefined);
+  assert.deepEqual(telegram.calls.setMessageReaction.at(-1), {
+    chatId: -1001,
+    messageId: 1,
+    reaction: [{ type: "emoji", emoji: "👀" }],
+    options: { is_big: false },
+  });
   assert.equal(telegram.calls.sendMessage.length, 0);
   assert.equal(telegram.calls.replaceProgressMessage.length, 0);
 });
@@ -1035,6 +1049,7 @@ function createFakeTelegram() {
     editMessage: [],
     replaceProgressMessage: [],
     reopenForumTopic: [],
+    setMessageReaction: [],
     sendChatAction: [],
     sendLongMessage: [],
     sendMessage: [],
@@ -1080,6 +1095,10 @@ function createFakeTelegram() {
     },
     async sendChatAction(chatId, action, options = {}) {
       calls.sendChatAction.push({ chatId, action, options });
+      return true;
+    },
+    async setMessageReaction(chatId, messageId, reaction, options = {}) {
+      calls.setMessageReaction.push({ chatId, messageId, reaction, options });
       return true;
     },
     async sendMessage(chatId, text, options = {}) {

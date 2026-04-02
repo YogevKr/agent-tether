@@ -161,6 +161,7 @@ After the next hook event, that session appears in Telegram `/sessions` with its
 - DM exposes the same management flow as fallback
 - `New Session` lets you choose provider, node, place, and folder, then opens a fresh topic
 - Topic messages are still plain text prompts
+- Accepted topic prompts get a best-effort 👀 reaction immediately
 - Topic control messages include buttons for `Status`, `Latest`, `Detach`, and `Archive`
 - Telegram now posts only the final reply for each turn
 - Session lists are sorted by newest `updatedAt` first and paginated 5 per page

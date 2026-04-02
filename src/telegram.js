@@ -83,6 +83,15 @@ export class TelegramClient {
     });
   }
 
+  async setMessageReaction(chatId, messageId, reaction, options = {}) {
+    return this.request("setMessageReaction", {
+      chat_id: chatId,
+      message_id: messageId,
+      reaction,
+      ...options,
+    });
+  }
+
   async sendMessage(chatId, text, options = {}) {
     return this.request("sendMessage", {
       chat_id: chatId,

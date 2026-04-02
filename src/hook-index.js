@@ -11,11 +11,22 @@ export async function applyHookEvent(store, input, { now = () => new Date().toIS
 
   const timestamp = now();
   const provider = normalizeAgentProvider(input.provider || "");
+  const cwd = String(input.cwd || "");
+  const hostId = String(input.host_id || "");
+  const { targetSessionId, duplicateSessionId } = await resolveIndexedSessionTarget(
+    store,
+    {
+      sessionId,
+      provider,
+      cwd,
+      hostId,
+    },
+  );
   const defaults = {
-    id: sessionId,
+    id: targetSessionId,
     label: deriveSessionLabel(input),
     threadId: sessionId,
-    cwd: String(input.cwd || ""),
+    cwd,
     model: String(input.model || ""),
     provider,
     createdVia: `${provider}-hook`,
@@ -23,67 +34,69 @@ export async function applyHookEvent(store, input, { now = () => new Date().toIS
     updatedAt: timestamp,
     status: "headless",
     transcriptPath: String(input.transcript_path || ""),
-    hostId: String(input.host_id || ""),
+    hostId,
   };
+  const createdViaUpdate =
+    targetSessionId === sessionId
+      ? `${provider}-hook`
+      : undefined;
+
+  let session = null;
 
   if (eventName === "SessionStart") {
-    return store.upsertSession(
-      sessionId,
+    session = await store.upsertSession(
+      targetSessionId,
       {
         label: deriveSessionLabel(input),
         threadId: sessionId,
-        cwd: String(input.cwd || ""),
+        cwd,
         model: String(input.model || ""),
         provider,
-        createdVia: `${provider}-hook`,
+        ...(createdViaUpdate ? { createdVia: createdViaUpdate } : {}),
         updatedAt: timestamp,
         transcriptPath: String(input.transcript_path || ""),
         lastHookEvent: eventName,
         lastStartSource: String(input.source || ""),
-        hostId: String(input.host_id || ""),
+        hostId,
         isBusy: false,
       },
       defaults,
     );
-  }
-
-  if (eventName === "UserPromptSubmit") {
-    return store.upsertSession(
-      sessionId,
+  } else if (eventName === "UserPromptSubmit") {
+    session = await store.upsertSession(
+      targetSessionId,
       {
         label: deriveSessionLabel(input),
         threadId: sessionId,
-        cwd: String(input.cwd || ""),
+        cwd,
         model: String(input.model || ""),
         provider,
-        createdVia: `${provider}-hook`,
+        ...(createdViaUpdate ? { createdVia: createdViaUpdate } : {}),
         latestUserPrompt: String(input.prompt || ""),
         updatedAt: timestamp,
         transcriptPath: String(input.transcript_path || ""),
         lastHookEvent: eventName,
-        hostId: String(input.host_id || ""),
+        hostId,
         isBusy: true,
         activeRunSource: "local-cli",
       },
       defaults,
     );
-  }
-
-  if (eventName === "Stop") {
-    return store.upsertSession(
-      sessionId,
+  } else if (eventName === "Stop") {
+    session = await store.upsertSession(
+      targetSessionId,
       {
         label: deriveSessionLabel(input),
         threadId: sessionId,
-        cwd: String(input.cwd || ""),
+        cwd,
         model: String(input.model || ""),
         provider,
-        createdVia: `${provider}-hook`,
+        ...(createdViaUpdate ? { createdVia: createdViaUpdate } : {}),
         latestAssistantMessage: String(input.last_assistant_message || ""),
         updatedAt: timestamp,
         transcriptPath: String(input.transcript_path || ""),
         lastHookEvent: eventName,
-        hostId: String(input.host_id || ""),
+        hostId,
         isBusy: false,
         activeRunSource: "",
       },
@@ -91,7 +104,15 @@ export async function applyHookEvent(store, input, { now = () => new Date().toIS
     );
   }
 
-  return null;
+  if (!session) {
+    return null;
+  }
+
+  if (duplicateSessionId && duplicateSessionId !== session.id) {
+    await store.deleteSession(duplicateSessionId);
+  }
+
+  return session;
 }
 
 export function deriveSessionLabel(input) {
@@ -109,4 +130,62 @@ export function stopHookResponse() {
   return {
     continue: true,
   };
+}
+
+async function resolveIndexedSessionTarget(store, { sessionId, provider, cwd, hostId }) {
+  const existingProviderSession = await store.getSession(sessionId);
+  const mergeCandidate = await findTelegramUiCandidate(store, {
+    sessionId,
+    provider,
+    cwd,
+    hostId,
+  });
+
+  if (!mergeCandidate) {
+    return {
+      targetSessionId: sessionId,
+      duplicateSessionId: "",
+    };
+  }
+
+  if (existingProviderSession && !isHookSession(existingProviderSession)) {
+    return {
+      targetSessionId: sessionId,
+      duplicateSessionId: "",
+    };
+  }
+
+  return {
+    targetSessionId: mergeCandidate.id,
+    duplicateSessionId:
+      existingProviderSession && existingProviderSession.id !== mergeCandidate.id
+        ? existingProviderSession.id
+        : "",
+  };
+}
+
+async function findTelegramUiCandidate(store, { sessionId, provider, cwd, hostId }) {
+  if (!cwd || !hostId) {
+    return null;
+  }
+
+  const sessions = await store.listSessions({ includeClosed: true });
+  const candidates = sessions.filter((session) =>
+    session.status !== "closed" &&
+    normalizeAgentProvider(session.provider || "") === provider &&
+    String(session.hostId || "") === hostId &&
+    String(session.cwd || "") === cwd &&
+    isTelegramUiSession(session) &&
+    session.id !== sessionId &&
+    (!String(session.threadId || "").trim() || String(session.threadId || "").trim() === sessionId));
+
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+function isTelegramUiSession(session) {
+  return String(session.createdVia || "").endsWith("-telegram-ui");
+}
+
+function isHookSession(session) {
+  return String(session.createdVia || "").endsWith("-hook");
 }
