@@ -1,8 +1,10 @@
 import { runCodexTurn } from "./codex.js";
 import {
   MAX_PANEL_SESSIONS,
+  buildDmHomeKeyboard,
   buildSessionDetailKeyboard,
   buildSessionsKeyboard,
+  buildTopicKeyboard,
   dmHelpText,
   formatDmStatus,
   formatLatestReply,
@@ -120,13 +122,7 @@ export function createRelayApp({
     }
 
     if (isCommand(text, "start", botUsername) || isCommand(text, "help", botUsername)) {
-      await telegram.sendMessage(
-        chatId,
-        dmHelpText({
-          userId,
-          forumTitle: forumChat.title || String(forumChat.id),
-        }),
-      );
+      await renderDmHome(chatId);
       return;
     }
 
@@ -154,24 +150,11 @@ export function createRelayApp({
     }
 
     if (isCommand(text, "status", botUsername)) {
-      const sessions = await store.listSessions();
-      await telegram.sendMessage(
-        chatId,
-        formatDmStatus({
-          forumTitle: forumChat.title || String(forumChat.id),
-          sessions,
-        }),
-      );
+      await renderDmStatus(chatId);
       return;
     }
 
-    await telegram.sendMessage(
-      chatId,
-      dmHelpText({
-        userId,
-        forumTitle: forumChat.title || String(forumChat.id),
-      }),
-    );
+    await renderDmHome(chatId);
   }
 
   async function handleForumMessage(message) {
@@ -200,6 +183,7 @@ export function createRelayApp({
     if (isCommand(text, "start", botUsername) || isCommand(text, "help", botUsername)) {
       await telegram.sendMessage(forumChat.id, topicHelpText(session), {
         message_thread_id: topicId,
+        reply_markup: buildTopicKeyboard(session),
       });
       return;
     }
@@ -210,7 +194,10 @@ export function createRelayApp({
         session
           ? formatSessionDetails(session)
           : "No Codex session is bound to this topic. Use DM /sessions to create or bind one.",
-        { message_thread_id: topicId },
+        {
+          message_thread_id: topicId,
+          reply_markup: buildTopicKeyboard(session),
+        },
       );
       return;
     }
@@ -227,6 +214,7 @@ export function createRelayApp({
 
       await sendLatestReply(forumChat.id, session, {
         message_thread_id: topicId,
+        reply_markup: buildTopicKeyboard(session),
       });
       return;
     }
@@ -245,7 +233,10 @@ export function createRelayApp({
       await telegram.sendMessage(
         forumChat.id,
         "Session detached from this topic. It is headless again and can be rebound from DM /sessions.",
-        { message_thread_id: topicId },
+        {
+          message_thread_id: topicId,
+          reply_markup: buildTopicKeyboard(null),
+        },
       );
       return;
     }
@@ -303,15 +294,47 @@ export function createRelayApp({
       return;
     }
 
+    const chatId = String(query.message.chat.id);
+    const messageId = query.message.message_id;
+    const topicId = query.message.message_thread_id;
+
+    if (query.message.chat.type === "private") {
+      if (query.data === "dm:help") {
+        await renderDmHome(chatId, messageId);
+        await telegram.answerCallbackQuery(query.id, {
+          text: "Help loaded.",
+        });
+        return;
+      }
+
+      if (query.data === "dm:status") {
+        await renderDmStatus(chatId, messageId);
+        await telegram.answerCallbackQuery(query.id, {
+          text: "Status loaded.",
+        });
+        return;
+      }
+
+      if (query.data === "dm:sessions") {
+        await renderSessionsPanel(chatId, messageId);
+        await telegram.answerCallbackQuery(query.id, {
+          text: "Sessions loaded.",
+        });
+        return;
+      }
+    }
+
+    if (String(query.message.chat.id) === String(forumChat.id)) {
+      await handleTopicCallbackQuery(query, topicId);
+      return;
+    }
+
     if (query.message.chat.type !== "private") {
       await telegram.answerCallbackQuery(query.id, {
         text: "Use DM controls for session management.",
       });
       return;
     }
-
-    const chatId = String(query.message.chat.id);
-    const messageId = query.message.message_id;
 
     if (query.data === "sessions:refresh") {
       await renderSessionsPanel(chatId, messageId);
@@ -359,6 +382,85 @@ export function createRelayApp({
     }
   }
 
+  async function handleTopicCallbackQuery(query, topicId) {
+    if (query.data === "topic:unbound") {
+      await telegram.answerCallbackQuery(query.id, {
+        text: "Open DM with the bot, then tap Sessions.",
+        show_alert: true,
+      });
+      return;
+    }
+
+    if (!topicId) {
+      await telegram.answerCallbackQuery(query.id, {
+        text: "Topic context missing.",
+        show_alert: true,
+      });
+      return;
+    }
+
+    const session = await store.getSessionByTopic(forumChat.id, topicId);
+
+    if (query.data.startsWith("topic:status:")) {
+      await telegram.sendMessage(
+        forumChat.id,
+        session
+          ? formatSessionDetails(session)
+          : "No Codex session is bound to this topic. Use DM Sessions to bind one.",
+        {
+          message_thread_id: topicId,
+          reply_markup: buildTopicKeyboard(session),
+        },
+      );
+      await telegram.answerCallbackQuery(query.id, {
+        text: session ? "Session status sent." : "No session bound.",
+      });
+      return;
+    }
+
+    if (query.data.startsWith("topic:latest:")) {
+      if (!session) {
+        await telegram.answerCallbackQuery(query.id, {
+          text: "No session bound.",
+          show_alert: true,
+        });
+        return;
+      }
+
+      await sendLatestReply(forumChat.id, session, {
+        message_thread_id: topicId,
+        reply_markup: buildTopicKeyboard(session),
+      });
+      await telegram.answerCallbackQuery(query.id, {
+        text: "Latest reply sent.",
+      });
+      return;
+    }
+
+    if (query.data.startsWith("topic:reset:")) {
+      if (!session) {
+        await telegram.answerCallbackQuery(query.id, {
+          text: "No session bound.",
+          show_alert: true,
+        });
+        return;
+      }
+
+      await store.detachSession(session.id);
+      await telegram.sendMessage(
+        forumChat.id,
+        "Session detached from this topic. It is headless again and can be rebound from DM Sessions.",
+        {
+          message_thread_id: topicId,
+          reply_markup: buildTopicKeyboard(null),
+        },
+      );
+      await telegram.answerCallbackQuery(query.id, {
+        text: "Session detached.",
+      });
+    }
+  }
+
   async function renderSessionsPanel(chatId, messageId = null) {
     const sessions = (await store.listSessions()).slice(0, MAX_PANEL_SESSIONS);
     const text = formatSessionsPanel({
@@ -376,6 +478,35 @@ export function createRelayApp({
     return editOrSend(chatId, messageId, text, {
       reply_markup: replyMarkup,
     });
+  }
+
+  async function renderDmHome(chatId, messageId = null) {
+    return editOrSend(
+      chatId,
+      messageId,
+      dmHelpText({
+        userId: chatId,
+        forumTitle: forumChat.title || String(forumChat.id),
+      }),
+      {
+        reply_markup: buildDmHomeKeyboard(),
+      },
+    );
+  }
+
+  async function renderDmStatus(chatId, messageId = null) {
+    const sessions = await store.listSessions();
+    return editOrSend(
+      chatId,
+      messageId,
+      formatDmStatus({
+        forumTitle: forumChat.title || String(forumChat.id),
+        sessions,
+      }),
+      {
+        reply_markup: buildDmHomeKeyboard(),
+      },
+    );
   }
 
   async function renderSessionDetails(chatId, messageId, sessionId) {
@@ -424,6 +555,7 @@ export function createRelayApp({
       bootstrapText,
       {
         message_thread_id: topic.message_thread_id,
+        reply_markup: buildTopicKeyboard(session),
       },
     );
 

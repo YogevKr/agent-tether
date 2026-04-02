@@ -7,13 +7,11 @@ export function dmHelpText({ userId, forumTitle }) {
     `user_id: ${userId}`,
     `forum: ${forumTitle}`,
     "",
-    "DM commands:",
-    "/chatid",
-    "/sessions",
-    "/status",
+    "Use the buttons below.",
     "",
-    "Local Codex sessions appear here once global hooks are installed.",
-    "Use /sessions to bind a topic, open a topic, inspect details, or resend the latest reply.",
+    "Sessions shows indexed local agent sessions.",
+    "Status shows forum and session counts.",
+    "chatid still works if you need your Telegram user id.",
   ].join("\n");
 }
 
@@ -21,19 +19,15 @@ export function topicHelpText(session) {
   if (!session) {
     return [
       "This topic is not bound to a Codex session.",
-      "Use DM /sessions to create or bind one.",
+      "Open DM with the bot and use Sessions to bind one.",
     ].join("\n");
   }
 
   return [
     `Session: ${session.label}`,
     "",
-    "Topic commands:",
-    "/status",
-    "/latest",
-    "/reset",
-    "",
-    "Plain text continues the bound Codex session.",
+    "Use the buttons below for status, latest reply, or detach.",
+    "Plain text continues the bound agent session.",
   ].join("\n");
 }
 
@@ -54,7 +48,7 @@ export function formatDmStatus({ forumTitle, sessions }) {
 export function formatSessionsPanel({ forumTitle, sessions, limit = MAX_PANEL_SESSIONS }) {
   const visibleSessions = sessions.slice(0, limit);
   const lines = [
-    "Codex sessions",
+    "Agent sessions",
     "",
     `Forum: ${forumTitle}`,
     "",
@@ -122,6 +116,17 @@ export function buildSessionsKeyboard(sessions) {
       text: "Refresh",
       callback_data: "sessions:refresh",
     },
+    {
+      text: "Status",
+      callback_data: "dm:status",
+    },
+  ]);
+
+  inline_keyboard.push([
+    {
+      text: "Help",
+      callback_data: "dm:help",
+    },
   ]);
 
   return { inline_keyboard };
@@ -156,6 +161,65 @@ export function buildSessionDetailKeyboard(session) {
   return { inline_keyboard };
 }
 
+export function buildDmHomeKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        {
+          text: "Sessions",
+          callback_data: "dm:sessions",
+        },
+        {
+          text: "Status",
+          callback_data: "dm:status",
+        },
+      ],
+      [
+        {
+          text: "Help",
+          callback_data: "dm:help",
+        },
+      ],
+    ],
+  };
+}
+
+export function buildTopicKeyboard(session) {
+  if (!session) {
+    return {
+      inline_keyboard: [
+        [
+          {
+            text: "Open Sessions",
+            callback_data: "topic:unbound",
+          },
+        ],
+      ],
+    };
+  }
+
+  return {
+    inline_keyboard: [
+      [
+        {
+          text: "Status",
+          callback_data: `topic:status:${session.id}`,
+        },
+        {
+          text: "Latest",
+          callback_data: `topic:latest:${session.id}`,
+        },
+      ],
+      [
+        {
+          text: "Detach",
+          callback_data: `topic:reset:${session.id}`,
+        },
+      ],
+    ],
+  };
+}
+
 export function formatTopicBootstrap(session, topicLink) {
   const lines = [
     `Session: ${session.label}`,
@@ -165,9 +229,7 @@ export function formatTopicBootstrap(session, topicLink) {
     "",
     "Plain text in this topic continues the bound Codex session.",
     `Back on computer: codex resume ${session.threadId}`,
-    "/status shows session details.",
-    "/latest resends the latest assistant reply.",
-    "/reset detaches the topic and returns the session to headless mode.",
+    "Buttons below handle status, latest reply, and detach.",
     "",
     `Topic link: ${topicLink}`,
   ];

@@ -46,9 +46,32 @@ test("When /sessions is requested in DM, then relay shows create and open action
   const sent = telegram.calls.sendMessage.at(-1);
   const buttons = sent.options.reply_markup.inline_keyboard.flat();
 
-  assert.match(sent.text, /Codex sessions/);
+  assert.match(sent.text, /Agent sessions/);
   assert.ok(buttons.some((button) => button.callback_data === "session:create:headless-1"));
   assert.ok(buttons.some((button) => button.url === "https://t.me/c/1001/4"));
+});
+
+test("When /start is requested in DM, then relay shows the home buttons", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const app = createTestApp({ store, telegram });
+
+  await app.initialize();
+  await app.handleUpdate({
+    message: {
+      text: "/start",
+      chat: { id: 344735105, type: "private" },
+      from: { id: 344735105 },
+    },
+  });
+
+  const sent = telegram.calls.sendMessage.at(-1);
+  const buttons = sent.options.reply_markup.inline_keyboard.flat();
+
+  assert.match(sent.text, /Agent Tether/);
+  assert.ok(buttons.some((button) => button.callback_data === "dm:sessions"));
+  assert.ok(buttons.some((button) => button.callback_data === "dm:status"));
+  assert.ok(buttons.some((button) => button.callback_data === "dm:help"));
 });
 
 test("When create-topic is tapped, then relay binds the session and refreshes the DM view", async () => {
@@ -88,6 +111,49 @@ test("When create-topic is tapped, then relay binds the session and refreshes th
   assert.equal(telegram.calls.createForumTopic.length, 1);
   assert.equal(answer.options.text, "Topic created. Open Topic.");
   assert.match(edited.text, /state: bound/);
+});
+
+test("When a topic keyboard latest button is tapped, then relay resends the latest reply", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const app = createTestApp({ store, telegram });
+
+  await store.saveSession({
+    id: "session-topic-1",
+    label: "Topic buttons",
+    threadId: "thread-topic-1",
+    cwd: "/repo",
+    latestAssistantMessage: "Latest from button",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+    status: "bound",
+    forumChatId: "-1001",
+    topicId: 15,
+    topicName: "Topic buttons",
+    topicLink: "https://t.me/c/1001/15",
+  });
+
+  await app.initialize();
+  await app.handleUpdate({
+    callback_query: {
+      id: "cb-topic-latest",
+      data: "topic:latest:session-topic-1",
+      from: { id: 344735105 },
+      message: {
+        message_id: 15,
+        message_thread_id: 15,
+        chat: { id: -1001, type: "supergroup" },
+      },
+    },
+  });
+
+  const sent = telegram.calls.sendLongMessage.at(-1);
+  const answer = telegram.calls.answerCallbackQuery.at(-1);
+
+  assert.match(sent.text, /Latest from button/);
+  assert.equal(sent.options.message_thread_id, 15);
+  assert.ok(sent.options.reply_markup);
+  assert.equal(answer.options.text, "Latest reply sent.");
 });
 
 test("When a topic message continues a bound session, then relay streams progress and stores the final reply", async () => {

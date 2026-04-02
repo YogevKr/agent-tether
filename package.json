@@ -17,6 +17,7 @@
     "worker": "node src/worker.js",
     "start-session": "node src/start-session.js",
     "discover-telegram": "node src/discover-telegram.js",
+    "configure-telegram-bot": "node src/configure-telegram-bot.js",
     "install-global-hooks": "node src/install-global-hooks.js",
     "install-launch-agent": "node src/install-launch-agent.js",
     "uninstall-launch-agent": "node src/uninstall-launch-agent.js",

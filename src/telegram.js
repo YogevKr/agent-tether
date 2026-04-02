@@ -31,6 +31,17 @@ export class TelegramClient {
     });
   }
 
+  async setMyCommands(commands, options = {}) {
+    return this.request("setMyCommands", {
+      commands,
+      ...options,
+    });
+  }
+
+  async setChatMenuButton(options = {}) {
+    return this.request("setChatMenuButton", options);
+  }
+
   async createForumTopic(chatId, name, options = {}) {
     return this.request("createForumTopic", {
       chat_id: chatId,

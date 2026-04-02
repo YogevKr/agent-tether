@@ -61,6 +61,12 @@ Run coding agents on your machine as usual. Global Codex hooks index sessions lo
    - Run `npm run discover-telegram`
    - Set `chat_id` for the `supergroup` update as `TELEGRAM_FORUM_CHAT_ID`
 
+6. Sync the bot commands and menu:
+
+   ```bash
+   npm run configure-telegram-bot
+   ```
+
 ## Install global hooks
 
 This repo ships a global hook installer:
@@ -136,6 +142,13 @@ codex
 ```
 
 After the next hook event, that session appears in Telegram `/sessions` with its host id.
+
+## Telegram UX
+
+- DM is button-first: `Sessions`, `Status`, `Help`
+- Topic messages are still plain text prompts
+- Topic control messages include buttons for `Status`, `Latest`, and `Detach`
+- Slash commands still work, but the normal flow should not require typing them
 
 Optional fallback: start a headless non-interactive Codex session from the computer:
 
