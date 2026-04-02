@@ -47,11 +47,16 @@ test("When /sessions is requested in DM, then relay shows create and open action
 
   const sent = telegram.calls.sendMessage.at(-1);
   const buttons = sent.options.reply_markup.inline_keyboard.flat();
+  const primaryButtons = sent.options.reply_markup.inline_keyboard
+    .slice(0, 2)
+    .map((row) => row[0]);
 
   assert.match(sent.text, /Agent sessions/);
+  assert.match(sent.text, /Tap the row number to bind, open, or restore that session/);
   assert.ok(buttons.some((button) => button.callback_data?.startsWith("session:ui:")));
   assert.ok(buttons.some((button) => button.url === "https://t.me/c/1001/4"));
   assert.ok(buttons.some((button) => button.callback_data === "dm:new"));
+  assert.deepEqual(primaryButtons.map((button) => button.text), ["1", "2"]);
 });
 
 test("When /sessions includes long session ids, then button payloads stay within Telegram limits", async () => {
@@ -84,6 +89,68 @@ test("When /sessions includes long session ids, then button payloads stay within
     .filter((button) => button.callback_data);
 
   assert.equal(callbackButtons.every((button) => button.callback_data.length <= 64), true);
+});
+
+test("When more than five sessions exist, then /sessions paginates with next and prev controls", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const app = createTestApp({ store, telegram });
+
+  for (let index = 1; index <= 6; index += 1) {
+    await store.saveSession({
+      id: `session-page-${index}`,
+      label: `Task ${index}`,
+      threadId: `thread-${index}`,
+      cwd: "/repo",
+      createdAt: `2026-04-02T0${index}:00:00.000Z`,
+      updatedAt: `2026-04-02T0${index}:30:00.000Z`,
+      status: "headless",
+    });
+  }
+
+  await app.initialize();
+  await app.handleUpdate({
+    message: {
+      text: "/sessions",
+      chat: { id: TEST_USER_ID, type: "private" },
+      from: { id: TEST_USER_ID },
+    },
+  });
+
+  const firstPage = telegram.calls.sendMessage.at(-1);
+  const nextButton = firstPage.options.reply_markup.inline_keyboard
+    .flat()
+    .find((button) => button.callback_data === "sessions:page:open:1");
+  const firstPrimaryButton = firstPage.options.reply_markup.inline_keyboard[0][0];
+
+  assert.match(firstPage.text, /Page 1\/2/);
+  assert.match(firstPage.text, /Task 6/);
+  assert.doesNotMatch(firstPage.text, /Task 1/);
+  assert.ok(nextButton);
+  assert.equal(firstPrimaryButton.text, "1");
+
+  await app.handleUpdate({
+    callback_query: {
+      id: "cb-next-page",
+      data: "sessions:page:open:1",
+      from: { id: TEST_USER_ID },
+      message: {
+        message_id: firstPage.message.message_id,
+        chat: { id: TEST_USER_ID, type: "private" },
+      },
+    },
+  });
+
+  const secondPage = telegram.calls.editMessage.at(-1);
+  const prevButton = secondPage.options.reply_markup.inline_keyboard
+    .flat()
+    .find((button) => button.callback_data === "sessions:page:open:0");
+  const secondPagePrimaryButton = secondPage.options.reply_markup.inline_keyboard[0][0];
+
+  assert.match(secondPage.text, /Page 2\/2/);
+  assert.match(secondPage.text, /Task 1/);
+  assert.ok(prevButton);
+  assert.equal(secondPagePrimaryButton.text, "6");
 });
 
 test("When /start is requested in DM, then relay shows the home buttons", async () => {
@@ -145,7 +212,7 @@ test("When /sessions is requested in the General topic, then relay shows the ses
   assert.ok(buttons.some((button) => button.callback_data === "dm:new"));
 });
 
-test("When /new is requested in the General topic, then relay shows node selection there", async () => {
+test("When /new is requested in the General topic, then relay shows provider selection there", async () => {
   const store = await createTempStore();
   const telegram = createFakeTelegram();
   const app = createTestApp({ store, telegram });
@@ -162,9 +229,13 @@ test("When /new is requested in the General topic, then relay shows node selecti
 
   const sent = telegram.calls.sendMessage.at(-1);
 
-  assert.match(sent.text, /Choose where to start the new agent session/);
+  const buttons = sent.options.reply_markup.inline_keyboard.flat();
+
+  assert.match(sent.text, /Choose which agent to start/);
   assert.equal(sent.chatId, "-1001");
   assert.equal(sent.options.message_thread_id, undefined);
+  assert.ok(buttons.some((button) => button.text === "Codex"));
+  assert.ok(buttons.some((button) => button.text === "Claude Code"));
 });
 
 test("When plain text is sent in the General topic, then relay ignores it", async () => {
@@ -226,10 +297,21 @@ test("When starting a new session from DM, then relay lets the user browse folde
       hostId: "mbp",
     },
     codexConfig: {
+      defaultProvider: "codex",
       defaultCwd: rootDir,
       startRoots: [rootDir],
       model: "",
       defaultArgs: ["--yolo"],
+      providers: {
+        codex: {
+          provider: "codex",
+          model: "gpt-5.4",
+        },
+        claude: {
+          provider: "claude",
+          model: "claude-sonnet-4-5",
+        },
+      },
     },
     telegram,
     store,
@@ -249,6 +331,21 @@ test("When starting a new session from DM, then relay lets the user browse folde
     callback_query: {
       id: "cb-new",
       data: "dm:new",
+      from: { id: TEST_USER_ID },
+      message: {
+        message_id: 3,
+        chat: { id: TEST_USER_ID, type: "private" },
+      },
+    },
+  });
+
+  const providerPanel = telegram.calls.editMessage.at(-1);
+  const providerButton = providerPanel.options.reply_markup.inline_keyboard[1][0];
+
+  await app.handleUpdate({
+    callback_query: {
+      id: "cb-provider",
+      data: providerButton.callback_data,
       from: { id: TEST_USER_ID },
       message: {
         message_id: 3,
@@ -323,7 +420,8 @@ test("When starting a new session from DM, then relay lets the user browse folde
   const session = sessions.find((item) => item.cwd === realRepoDir);
 
   assert.ok(session);
-  assert.equal(session?.createdVia, "telegram-ui");
+  assert.equal(session?.provider, "claude");
+  assert.equal(session?.createdVia, "claude-telegram-ui");
   assert.equal(session?.threadId, "");
   assert.equal(session?.status, "bound");
   assert.equal(session?.topicId, 42);
@@ -821,6 +919,55 @@ test("When a topic message targets a remote host session, then relay queues the 
   assert.equal(telegram.calls.replaceProgressMessage.length, 0);
 });
 
+test("When a Claude topic turn runs without a saved model, then the Claude provider default model is used", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const runCalls = [];
+  const app = createTestApp({
+    store,
+    telegram,
+    runTurn: async (input) => {
+      runCalls.push(input);
+      return {
+        threadId: "claude-thread-2",
+        message: "Claude final reply",
+      };
+    },
+  });
+
+  await store.saveSession({
+    id: "claude-bound-1",
+    label: "Claude task",
+    threadId: "claude-thread-1",
+    provider: "claude",
+    cwd: "/repo",
+    model: "",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+    status: "bound",
+    forumChatId: "-1001",
+    topicId: 19,
+    topicName: "Claude task",
+    topicLink: "https://t.me/c/1001/19",
+  });
+
+  await app.initialize();
+  await app.handleUpdate({
+    message: {
+      text: "continue with claude",
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: TEST_USER_ID },
+      message_thread_id: 19,
+    },
+  });
+  await app.waitForIdle();
+
+  assert.equal(runCalls.length, 1);
+  assert.equal(runCalls[0].provider, "claude");
+  assert.equal(runCalls[0].model, "claude-sonnet-4-5");
+  assert.equal(telegram.calls.sendLongMessage.at(-1).text, "Claude final reply");
+});
+
 async function createTempStore() {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-app-"));
   return new StateStore(path.join(tempDir, "state.json"));
@@ -848,10 +995,21 @@ function createTestApp({
       ...botConfigOverrides,
     },
     codexConfig: {
+      defaultProvider: "codex",
       defaultCwd: "/repo",
       startRoots: ["/repo"],
       model: "",
       defaultArgs: ["--yolo"],
+      providers: {
+        codex: {
+          provider: "codex",
+          model: "gpt-5.4",
+        },
+        claude: {
+          provider: "claude",
+          model: "claude-sonnet-4-5",
+        },
+      },
     },
     telegram,
     store,

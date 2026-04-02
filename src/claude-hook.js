@@ -1,19 +1,19 @@
-import { getCodexConfig, getStateFile } from "./config.js";
+import { getRuntimeConfig, getStateFile } from "./config.js";
 import { applyHookEvent, stopHookResponse } from "./hook-index.js";
 import { StateStore } from "./state-store.js";
 
 async function main() {
   const input = await readJsonStdin();
-  const codexConfig = getCodexConfig();
+  const runtimeConfig = getRuntimeConfig();
   const enrichedInput = {
     ...input,
-    host_id: input.host_id || codexConfig.hostId,
-    provider: "codex",
+    host_id: input.host_id || runtimeConfig.hostId,
+    provider: "claude",
   };
 
   try {
-    if (codexConfig.hubUrl) {
-      await postHookToHub(codexConfig.hubUrl, codexConfig.hubToken, enrichedInput);
+    if (runtimeConfig.hubUrl) {
+      await postHookToHub(runtimeConfig.hubUrl, runtimeConfig.hubToken, enrichedInput);
     } else {
       const store = new StateStore(getStateFile());
       await applyHookEvent(store, enrichedInput);

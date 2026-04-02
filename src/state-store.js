@@ -398,6 +398,7 @@ function normalizeSession(session) {
     id: String(session.id),
     label: String(session.label || "Untitled session"),
     threadId: String(session.threadId || ""),
+    provider: String(session.provider || "codex"),
     cwd: String(session.cwd || ""),
     model: String(session.model || ""),
     latestAssistantMessage: String(session.latestAssistantMessage || ""),

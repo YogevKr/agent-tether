@@ -1,25 +1,26 @@
 # Agent Tether
 
-Run coding agents on your machine as usual. Global Codex hooks index sessions locally. Telegram lets you bind one of those sessions to a forum topic and continue it remotely.
+Run coding agents on your machine as usual. Global Codex and Claude Code hooks index sessions locally. Telegram lets you bind one of those sessions to a forum topic and continue it remotely.
 
 ## Model
 
-- Local Codex sessions are indexed by global hooks.
+- Local Codex and Claude Code sessions are indexed by global hooks.
 - Telegram General topic is the main control plane.
 - Telegram DM remains available as fallback control.
-- A Telegram forum topic is the work surface for one Codex session.
+- A Telegram forum topic is the work surface for one agent session.
 - Sessions stay headless until you bind one from `/sessions`.
 - Sessions are owned by one `host_id`, so one bot can route work to multiple computers.
 - Telegram can also create a fresh session: choose node, choose place, browse directories, open topic, send first prompt.
+  Before node/place selection, Telegram asks which provider to use for the new session.
 
 ## Requirements
 
 - Node 20+
-- `codex` CLI installed and logged in
+- `codex` and/or `claude` CLI installed and logged in
 - Telegram bot token from BotFather
 - A Telegram supergroup with Topics enabled
 - The bot added to that supergroup as admin with topic management rights
-- Global Codex hooks enabled in `~/.codex`
+- Global agent hooks enabled in `~/.codex` and `~/.claude`
 
 ## Setup
 
@@ -82,6 +83,7 @@ That updates:
 
 - `~/.codex/config.toml` with `features.codex_hooks = true`
 - `~/.codex/hooks.json` with handlers for `SessionStart`, `UserPromptSubmit`, and `Stop`
+- `~/.claude/settings.json` with handlers for `SessionStart`, `UserPromptSubmit`, and `Stop`
 
 ## Run the relay
 
@@ -137,35 +139,46 @@ Remove the background worker:
 npm run uninstall-launch-agent -- --mode worker
 ```
 
-Start Codex normally from the computer:
+Start your agent normally from the computer:
 
 ```bash
 cd /absolute/path/to/repo
 codex
 ```
 
-After the next hook event, that session appears in Telegram `/sessions` with its host id.
+Or:
+
+```bash
+cd /absolute/path/to/repo
+claude
+```
+
+After the next hook event, that session appears in Telegram `/sessions` with its provider and host id.
 
 ## Telegram UX
 
 - General topic is button-first: `New Session`, `Sessions`, `Archived`, `Status`, `Help`
 - DM exposes the same management flow as fallback
-- `New Session` lets you choose node, place, and folder, then opens a fresh topic
+- `New Session` lets you choose provider, node, place, and folder, then opens a fresh topic
 - Topic messages are still plain text prompts
 - Topic control messages include buttons for `Status`, `Latest`, `Detach`, and `Archive`
 - Telegram now posts only the final reply for each turn
-- Session lists are sorted by newest `updatedAt` first
+- Session lists are sorted by newest `updatedAt` first and paginated 5 per page
 - Slash commands still work, but normal use should not require typing them
 
-## Codex defaults
+## Agent defaults
 
+- `AGENT_PROVIDER` defaults to `codex`
+- `AGENT_PROVIDER` is the fallback default outside the Telegram new-session picker
+- Locally indexed sessions keep whichever provider started them
 - `CODEX_DEFAULT_ARGS` defaults to `--yolo`
+- `CLAUDE_DEFAULT_ARGS` defaults to empty
 - If you keep `--yolo`, Agent Tether will not also add explicit approval/sandbox config flags on top
 - `RELAY_AUTO_ARCHIVE_AFTER_DAYS` defaults to `14`
 - `RELAY_AUTO_PRUNE_AFTER_DAYS` defaults to `60`
 - Set either one to `0` to disable that retention step
 
-Optional fallback: start a headless non-interactive Codex session from the computer:
+Optional fallback: start a headless non-interactive agent session from the computer:
 
 ```bash
 npm run start-session -- --label "auth fix" --cwd /absolute/path/to/repo --prompt "Inspect the failing auth flow and propose a fix."
@@ -194,16 +207,15 @@ npm run start-session -- --label "docs cleanup" --notify-chat 123456789 --prompt
 - `/new`
 - `/status`
 
-`/sessions` shows indexed sessions with buttons:
+`/sessions` shows indexed sessions with numbered rows:
 
-- `Bind ...` for headless sessions
-- `Open ...` for already bound sessions
+- row number: bind or open
 - `Details`
 - `Archive`
 
 `/archived` shows hidden sessions with:
 
-- `Restore`
+- row number: restore
 - `Details`
 - `Latest`
 
@@ -211,7 +223,7 @@ npm run start-session -- --label "docs cleanup" --notify-chat 123456789 --prompt
 
 Inside a bound forum topic:
 
-- plain text continues the Codex session
+- plain text continues the bound agent session
 - Telegram sends the final reply after the turn completes
 - `/status` shows session details
 - `/latest` resends the latest assistant reply
@@ -223,6 +235,13 @@ Back on the computer, resume the same session with:
 ```bash
 cd /absolute/path/to/repo
 codex resume <session_id>
+```
+
+Or for Claude Code:
+
+```bash
+cd /absolute/path/to/repo
+claude --resume <session_id>
 ```
 
 ## Tests
@@ -254,7 +273,7 @@ MIT
 - each session stores:
   - label
   - cwd
-  - Codex session id
+  - agent session id
   - host id
   - latest assistant reply
   - optional forum topic binding
@@ -263,13 +282,14 @@ MIT
 
 - Only Telegram user ids in `AUTHORIZED_TELEGRAM_USER_IDS` can control the relay.
 - Codex runs with `approval_policy=never` and `sandbox_mode=workspace-write` by default.
+- Claude Code uses its configured `permission_mode` if you set `CLAUDE_PERMISSION_MODE`.
 - Change those in `.env` if you want a different trust boundary.
 - For multi-host mode, set a strong `RELAY_HUB_TOKEN` before exposing the hub API beyond localhost.
 
 ## Notes
 
 - Global hooks only index sessions and keep their latest local prompt/reply metadata fresh.
-- `codex exec resume` and `codex resume` both target the same Codex session id. The relay binds Telegram topics to those ids.
+- `codex exec resume`, `codex resume`, and `claude --resume` all target the same provider-specific session ids. The relay binds Telegram topics to those ids.
 - The Telegram hub only polls Telegram once. Other computers run workers and hooks; they do not poll the bot token.
 - The bot uses long polling. No webhook or public server required.
 - Topic links are built from Telegram forum-topic link conventions using the group username when available, otherwise the private `t.me/c/...` form.

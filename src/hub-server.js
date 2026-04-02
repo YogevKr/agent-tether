@@ -2,6 +2,7 @@ import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { applyHookEvent } from "./hook-index.js";
 import { createProgressState } from "./relay-app.js";
+import { formatProviderName } from "./session-view.js";
 
 export function createHubServer({
   botConfig,
@@ -136,7 +137,9 @@ export function createHubServer({
               await telegram.replaceProgressMessage(
                 job.chatId,
                 { message_id: job.progressMessageId },
-                isFailure ? `Codex failed.\n\n${payload.error}` : payload.message,
+                isFailure
+                  ? `${formatProviderName(session.provider)} failed.\n\n${payload.error}`
+                  : payload.message,
                 {
                   message_thread_id: job.messageThreadId,
                 },
@@ -144,7 +147,9 @@ export function createHubServer({
             } else {
               await telegram.sendLongMessage(
                 job.chatId,
-                isFailure ? `Codex failed.\n\n${payload.error}` : payload.message,
+                isFailure
+                  ? `${formatProviderName(session.provider)} failed.\n\n${payload.error}`
+                  : payload.message,
                 {
                   message_thread_id: job.messageThreadId,
                 },
@@ -202,7 +207,7 @@ export function createHubServer({
         progressMessageId,
         progressState: {
           ...createProgressState(session),
-          phase: pendingAhead > 0 ? "queued" : "waiting for Codex",
+          phase: pendingAhead > 0 ? "queued" : "waiting for agent",
         },
         createdAt: now(),
         updatedAt: now(),

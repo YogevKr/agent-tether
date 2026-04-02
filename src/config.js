@@ -39,7 +39,75 @@ export function getBotConfig() {
   };
 }
 
+export function getRuntimeConfig() {
+  const defaultProvider = normalizeAgentProvider(process.env.AGENT_PROVIDER || "codex");
+  const shared = {
+    defaultProvider,
+    defaultCwd: resolveExistingDir(
+      process.env.CODEX_DEFAULT_CWD || process.cwd(),
+      "CODEX_DEFAULT_CWD",
+    ),
+    hostId: process.env.RELAY_HOST_ID || os.hostname(),
+    startRoots: getStartRoots(),
+    hubUrl: process.env.RELAY_HUB_URL || "",
+    hubToken: process.env.RELAY_HUB_TOKEN || "",
+    providers: {
+      codex: {
+        provider: "codex",
+        bin: process.env.CODEX_BIN || "codex",
+        model: process.env.CODEX_MODEL || "",
+        approvalPolicy: process.env.CODEX_APPROVAL_POLICY || "never",
+        sandboxMode: process.env.CODEX_SANDBOX_MODE || "workspace-write",
+        defaultArgs: parseCommandArgs(process.env.CODEX_DEFAULT_ARGS || "--yolo"),
+        skipGitRepoCheck: parseBoolean(
+          process.env.CODEX_SKIP_GIT_REPO_CHECK,
+          true,
+        ),
+      },
+      claude: {
+        provider: "claude",
+        bin: process.env.CLAUDE_BIN || "claude",
+        model: process.env.CLAUDE_MODEL || "",
+        permissionMode: process.env.CLAUDE_PERMISSION_MODE || "",
+        defaultArgs: parseCommandArgs(process.env.CLAUDE_DEFAULT_ARGS || ""),
+      },
+    },
+  };
+
+  return {
+    ...shared,
+    ...shared.providers[defaultProvider],
+  };
+}
+
 export function getCodexConfig() {
+  return getRuntimeConfig();
+}
+
+export function getProviderConfig(runtimeConfig, provider = "") {
+  const selectedProvider = normalizeAgentProvider(provider || runtimeConfig.defaultProvider);
+  const selected = runtimeConfig.providers?.[selectedProvider];
+
+  if (!selected) {
+    throw new Error(`Unsupported agent provider: ${provider}`);
+  }
+
+  return selected;
+}
+
+export function getProviderModel(runtimeConfig, provider = "") {
+  return getProviderConfig(runtimeConfig, provider).model || runtimeConfig.model || "";
+}
+
+export function normalizeAgentProvider(provider) {
+  if (String(provider || "").toLowerCase() === "claude") {
+    return "claude";
+  }
+
+  return "codex";
+}
+
+export function getLegacyCodexConfig() {
   return {
     bin: process.env.CODEX_BIN || "codex",
     defaultCwd: resolveExistingDir(

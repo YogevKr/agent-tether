@@ -1,4 +1,5 @@
 export const MAX_PANEL_SESSIONS = 20;
+export const SESSIONS_PAGE_SIZE = 5;
 
 export function dmHelpText({ userId, forumTitle }) {
   return [
@@ -20,7 +21,7 @@ export function dmHelpText({ userId, forumTitle }) {
 export function topicHelpText(session) {
   if (!session) {
     return [
-      "This topic is not bound to a Codex session.",
+      "This topic is not bound to an agent session.",
       "Use Sessions in General or DM to bind one.",
     ].join("\n");
   }
@@ -54,13 +55,23 @@ export function formatSessionsPanel({
   sessions,
   limit = MAX_PANEL_SESSIONS,
   mode = "open",
+  page = 0,
+  pageSize = SESSIONS_PAGE_SIZE,
 }) {
-  const visibleSessions = sessions.slice(0, limit);
+  const cappedSessions = sessions.slice(0, limit);
+  const totalSessions = cappedSessions.length;
+  const totalPages = Math.max(Math.ceil(totalSessions / pageSize), 1);
+  const currentPage = Math.max(0, Math.min(page, totalPages - 1));
+  const visibleSessions = cappedSessions.slice(
+    currentPage * pageSize,
+    (currentPage + 1) * pageSize,
+  );
   const lines = [
     mode === "archived" ? "Archived sessions" : "Agent sessions",
     "",
     `Forum: ${forumTitle}`,
     "Sorted: newest update first",
+    "Tap the row number to bind, open, or restore that session.",
     "",
   ];
 
@@ -71,15 +82,16 @@ export function formatSessionsPanel({
       lines.push("Archive sessions to hide them from the main list.");
     } else {
       lines.push("Use New Session to start one from Telegram.");
-      lines.push("Or run Codex locally and it will appear here after the next hook event.");
+      lines.push("Or run a supported agent locally and it will appear here after the next hook event.");
     }
     return lines.join("\n");
   }
 
   visibleSessions.forEach((session, index) => {
-    lines.push(`${index + 1}. ${session.label}`);
+    lines.push(`${currentPage * pageSize + index + 1}. ${session.label}`);
     lines.push(`   id: ${shortSessionId(session.id)}`);
     lines.push(`   state: ${session.status}`);
+    lines.push(`   provider: ${formatProviderName(session.provider)}`);
     lines.push(`   host: ${session.hostId || "local"}`);
     lines.push(`   origin: ${session.createdVia}`);
     lines.push(`   cwd: ${session.cwd}`);
@@ -90,8 +102,10 @@ export function formatSessionsPanel({
     lines.push("");
   });
 
+  lines.push(`Page ${currentPage + 1}/${totalPages} · showing ${visibleSessions.length} of ${totalSessions}`);
+
   if (sessions.length > limit) {
-    lines.push(`Showing the newest ${limit} sessions.`);
+    lines.push(`Capped to the newest ${limit} sessions.`);
   }
 
   return lines.join("\n").trim();
@@ -101,27 +115,38 @@ export function buildSessionsKeyboard(
   sessions,
   {
     mode = "open",
+    page = 0,
+    pageSize = SESSIONS_PAGE_SIZE,
+    limit = MAX_PANEL_SESSIONS,
     bindSession = (session) => `session:create:${session.id}`,
     showSessionDetails = (session) => `session:details:${session.id}`,
     showLatestSessionReply = (session) => `session:latest:${session.id}`,
     archiveSession = (session) => `session:archive:${session.id}`,
     restoreSession = (session) => `session:restore:${session.id}`,
+    goToPage = (targetMode, targetPage) => `sessions:page:${targetMode}:${targetPage}`,
   } = {},
 ) {
-  const inline_keyboard = sessions.slice(0, MAX_PANEL_SESSIONS).flatMap((session) => {
-    const label = truncateLabel(session.label, 18);
+  const cappedSessions = sessions.slice(0, limit);
+  const totalPages = Math.max(Math.ceil(cappedSessions.length / pageSize), 1);
+  const currentPage = Math.max(0, Math.min(page, totalPages - 1));
+  const pageSessions = cappedSessions.slice(
+    currentPage * pageSize,
+    (currentPage + 1) * pageSize,
+  );
+  const inline_keyboard = pageSessions.flatMap((session, index) => {
+    const rowNumber = String(currentPage * pageSize + index + 1);
     const primaryButton = mode === "archived"
       ? {
-          text: `Restore ${label}`,
+          text: rowNumber,
           callback_data: restoreSession(session),
         }
       : session.status === "bound" && session.topicLink
       ? {
-          text: `Open ${label}`,
+          text: rowNumber,
           url: session.topicLink,
         }
       : {
-          text: `Bind ${label}`,
+          text: rowNumber,
           callback_data: bindSession(session),
         };
 
@@ -142,6 +167,31 @@ export function buildSessionsKeyboard(
           },
     ]];
   });
+
+  if (totalPages > 1) {
+    const navigationRow = [];
+
+    if (currentPage > 0) {
+      navigationRow.push({
+        text: "Prev",
+        callback_data: goToPage(mode, currentPage - 1),
+      });
+    }
+
+    navigationRow.push({
+      text: `${currentPage + 1}/${totalPages}`,
+      callback_data: goToPage(mode, currentPage),
+    });
+
+    if (currentPage < totalPages - 1) {
+      navigationRow.push({
+        text: "Next",
+        callback_data: goToPage(mode, currentPage + 1),
+      });
+    }
+
+    inline_keyboard.push(navigationRow);
+  }
 
   inline_keyboard.push([
     {
@@ -182,6 +232,7 @@ export function buildSessionDetailKeyboard(
     showLatestSessionReply = (item) => `session:latest:${item.id}`,
     archiveSession = (item) => `session:archive:${item.id}`,
     restoreSession = (item) => `session:restore:${item.id}`,
+    backToSessions = () => "sessions:refresh",
   } = {},
 ) {
   const inline_keyboard = [];
@@ -219,7 +270,7 @@ export function buildSessionDetailKeyboard(
         },
     {
       text: session.status === "closed" ? "Open Sessions" : "Back to Sessions",
-      callback_data: session.status === "closed" ? "sessions:refresh" : "sessions:refresh",
+      callback_data: backToSessions(session),
     },
   ]);
 
@@ -321,15 +372,17 @@ export function buildTopicKeyboard(
 }
 
 export function formatTopicBootstrap(session, topicLink) {
+  const providerName = formatProviderName(session.provider);
   const lines = [
     `Session: ${session.label}`,
     `session_id: ${shortSessionId(session.id)}`,
+    `provider: ${providerName}`,
     `host: ${session.hostId || "local"}`,
     `cwd: ${session.cwd}`,
     "",
-    "Plain text in this topic continues the bound Codex session.",
+    "Plain text in this topic continues the bound agent session.",
     session.threadId
-      ? `Back on computer: codex resume ${session.threadId}`
+      ? `Back on computer: ${buildResumeCommand(session)}`
       : "Send the first prompt here to start the session.",
     "Buttons below handle status, latest reply, detach, and archive.",
     "",
@@ -338,7 +391,7 @@ export function formatTopicBootstrap(session, topicLink) {
 
   if (session.latestAssistantMessage) {
     lines.push("");
-    lines.push("Latest Codex reply:");
+    lines.push(`Latest ${providerName} reply:`);
     lines.push("");
     lines.push(session.latestAssistantMessage);
   }
@@ -347,14 +400,16 @@ export function formatTopicBootstrap(session, topicLink) {
 }
 
 export function formatSessionDetails(session) {
+  const providerName = formatProviderName(session.provider);
   return [
     `Session: ${session.label}`,
     `id: ${shortSessionId(session.id)}`,
-    `codex_session_id: ${session.threadId || "(starts on first prompt)"}`,
+    `provider: ${providerName}`,
+    `agent_session_id: ${session.threadId || "(starts on first prompt)"}`,
     `host: ${session.hostId || "local"}`,
     `resume_local: ${
       session.threadId
-        ? `cd ${session.cwd} && codex resume ${session.threadId}`
+        ? buildResumeCommand(session)
         : "send the first prompt in Telegram to start it"
     }`,
     `state: ${session.status}`,
@@ -370,7 +425,7 @@ export function formatSessionDetails(session) {
 
 export function formatLatestReply(session) {
   return [
-    `Latest Codex reply`,
+    `Latest ${formatProviderName(session.provider)} reply`,
     `session: ${session.label}`,
     `state: ${session.status}`,
     "",
@@ -392,5 +447,17 @@ export function truncateLabel(label, maxLength) {
 
 export function toTopicName(label) {
   const compact = label.replace(/\s+/g, " ").trim();
-  return compact.slice(0, 128) || "Codex session";
+  return compact.slice(0, 128) || "Agent session";
+}
+
+function buildResumeCommand(session) {
+  if (String(session.provider || "").toLowerCase() === "claude") {
+    return `cd ${session.cwd} && claude --resume ${session.threadId}`;
+  }
+
+  return `cd ${session.cwd} && codex resume ${session.threadId}`;
+}
+
+export function formatProviderName(provider) {
+  return String(provider || "").toLowerCase() === "claude" ? "Claude Code" : "Codex";
 }

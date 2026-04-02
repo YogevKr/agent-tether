@@ -1,4 +1,5 @@
 import path from "node:path";
+import { normalizeAgentProvider } from "./config.js";
 
 export async function applyHookEvent(store, input, { now = () => new Date().toISOString() } = {}) {
   const eventName = String(input.hook_event_name || "");
@@ -9,13 +10,15 @@ export async function applyHookEvent(store, input, { now = () => new Date().toIS
   }
 
   const timestamp = now();
+  const provider = normalizeAgentProvider(input.provider || "");
   const defaults = {
     id: sessionId,
     label: deriveSessionLabel(input),
     threadId: sessionId,
     cwd: String(input.cwd || ""),
     model: String(input.model || ""),
-    createdVia: "codex-hook",
+    provider,
+    createdVia: `${provider}-hook`,
     createdAt: timestamp,
     updatedAt: timestamp,
     status: "headless",
@@ -31,7 +34,8 @@ export async function applyHookEvent(store, input, { now = () => new Date().toIS
         threadId: sessionId,
         cwd: String(input.cwd || ""),
         model: String(input.model || ""),
-        createdVia: "codex-hook",
+        provider,
+        createdVia: `${provider}-hook`,
         updatedAt: timestamp,
         transcriptPath: String(input.transcript_path || ""),
         lastHookEvent: eventName,
@@ -51,7 +55,8 @@ export async function applyHookEvent(store, input, { now = () => new Date().toIS
         threadId: sessionId,
         cwd: String(input.cwd || ""),
         model: String(input.model || ""),
-        createdVia: "codex-hook",
+        provider,
+        createdVia: `${provider}-hook`,
         latestUserPrompt: String(input.prompt || ""),
         updatedAt: timestamp,
         transcriptPath: String(input.transcript_path || ""),
@@ -72,7 +77,8 @@ export async function applyHookEvent(store, input, { now = () => new Date().toIS
         threadId: sessionId,
         cwd: String(input.cwd || ""),
         model: String(input.model || ""),
-        createdVia: "codex-hook",
+        provider,
+        createdVia: `${provider}-hook`,
         latestAssistantMessage: String(input.last_assistant_message || ""),
         updatedAt: timestamp,
         transcriptPath: String(input.transcript_path || ""),
@@ -90,9 +96,10 @@ export async function applyHookEvent(store, input, { now = () => new Date().toIS
 
 export function deriveSessionLabel(input) {
   const cwd = String(input.cwd || "").trim();
+  const provider = normalizeAgentProvider(input.provider || "");
 
   if (!cwd) {
-    return "Local Codex session";
+    return provider === "claude" ? "Local Claude Code session" : "Local Codex session";
   }
 
   return path.basename(cwd) || cwd;

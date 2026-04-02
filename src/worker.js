@@ -1,9 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { getCodexConfig } from "./config.js";
-import { runCodexTurn } from "./codex.js";
+import { getProviderModel, getRuntimeConfig } from "./config.js";
+import { runAgentTurn } from "./agent-runtime.js";
 
-const codexConfig = getCodexConfig();
+const codexConfig = getRuntimeConfig();
 
 async function main() {
   if (!codexConfig.hubUrl) {
@@ -49,12 +49,13 @@ async function executeJob(job, session) {
       return;
     }
 
-    const result = await runCodexTurn({
-      codex: codexConfig,
+    const result = await runAgentTurn({
+      runtime: codexConfig,
+      provider: session.provider || codexConfig.defaultProvider || "codex",
       prompt: job.prompt,
       cwd: session.cwd || codexConfig.defaultCwd,
       threadId: session.threadId,
-      model: session.model || codexConfig.model,
+      model: session.model || getProviderModel(codexConfig, session.provider),
     });
 
     await postJson(`${codexConfig.hubUrl}/api/jobs/${job.id}/complete`, {

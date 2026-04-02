@@ -1,9 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { runCodexTurn } from "./codex.js";
+import { runAgentTurn } from "./agent-runtime.js";
 import {
   MAX_PANEL_SESSIONS,
+  SESSIONS_PAGE_SIZE,
   buildDmHomeKeyboard,
   buildSessionDetailKeyboard,
   buildSessionsKeyboard,
@@ -11,6 +12,7 @@ import {
   dmHelpText,
   formatDmStatus,
   formatLatestReply,
+  formatProviderName,
   formatSessionDetails,
   formatSessionsPanel,
   formatTopicBootstrap,
@@ -31,7 +33,7 @@ export function createRelayApp({
   telegram,
   store,
   hubServer = null,
-  runTurn = runCodexTurn,
+  runTurn = runAgentTurn,
   now = () => new Date().toISOString(),
   clock = () => Date.now(),
   logger = console,
@@ -170,7 +172,7 @@ export function createRelayApp({
     }
 
     if (isCommand(text, "new", botUsername)) {
-      await renderHostPicker(chatId);
+      await renderProviderPicker(chatId);
       return;
     }
 
@@ -219,7 +221,7 @@ export function createRelayApp({
         forumChat.id,
         session
           ? formatSessionDetails(session)
-          : "No Codex session is bound to this topic. Use Sessions in General or DM to create or bind one.",
+          : unboundTopicText("create or bind"),
         {
           message_thread_id: topicId,
           reply_markup: buildTopicKeyboard(session, topicKeyboardActions()),
@@ -232,7 +234,7 @@ export function createRelayApp({
       if (!session) {
         await telegram.sendMessage(
           forumChat.id,
-          "No Codex session is bound to this topic. Use Sessions in General or DM to create or bind one.",
+          unboundTopicText("create or bind"),
           { message_thread_id: topicId },
         );
         return;
@@ -249,7 +251,7 @@ export function createRelayApp({
       if (!session) {
         await telegram.sendMessage(
           forumChat.id,
-          "No Codex session is bound to this topic.",
+          unboundTopicText(),
           { message_thread_id: topicId },
         );
         return;
@@ -271,7 +273,7 @@ export function createRelayApp({
       if (!session) {
         await telegram.sendMessage(
           forumChat.id,
-          "No Codex session is bound to this topic.",
+          unboundTopicText(),
           { message_thread_id: topicId },
         );
         return;
@@ -289,7 +291,7 @@ export function createRelayApp({
     if (!session) {
       await telegram.sendMessage(
         forumChat.id,
-        "No Codex session is bound to this topic. Use Sessions in General or DM to create or bind one.",
+        unboundTopicText("create or bind"),
         { message_thread_id: topicId },
       );
       return;
@@ -341,7 +343,7 @@ export function createRelayApp({
     }
 
     if (isCommand(text, "new", botUsername)) {
-      await renderHostPicker(chatId);
+      await renderProviderPicker(chatId);
       return;
     }
 
@@ -394,9 +396,9 @@ export function createRelayApp({
 
   async function handleControlCallbackQuery(query, { chatId, messageId, userId }) {
     if (query.data === "dm:new") {
-      await renderHostPicker(chatId, messageId);
+      await renderProviderPicker(chatId, messageId);
       await telegram.answerCallbackQuery(query.id, {
-        text: "Choose a node.",
+        text: "Choose a provider.",
       });
       return;
     }
@@ -441,9 +443,28 @@ export function createRelayApp({
       return;
     }
 
+    if (query.data.startsWith("new:provider:")) {
+      const provider = normalizeProviderChoice(codexConfig, query.data.slice("new:provider:".length));
+      await renderHostPicker(chatId, messageId, provider);
+      await telegram.answerCallbackQuery(query.id, {
+        text: "Choose a node.",
+      });
+      return;
+    }
+
     if (query.data.startsWith("new:host:")) {
-      const hostId = query.data.slice("new:host:".length);
-      await renderRootPicker(chatId, messageId, hostId);
+      const token = query.data.slice("new:host:".length);
+      const context = uiTokens.get(token);
+
+      if (!context) {
+        await telegram.answerCallbackQuery(query.id, {
+          text: "Node selection expired. Start again.",
+          show_alert: true,
+        });
+        return;
+      }
+
+      await renderRootPicker(chatId, messageId, context);
       await telegram.answerCallbackQuery(query.id, {
         text: "Choose a starting place.",
       });
@@ -451,8 +472,18 @@ export function createRelayApp({
     }
 
     if (query.data.startsWith("new:roots:")) {
-      const hostId = query.data.slice("new:roots:".length);
-      await renderRootPicker(chatId, messageId, hostId);
+      const token = query.data.slice("new:roots:".length);
+      const context = uiTokens.get(token);
+
+      if (!context) {
+        await telegram.answerCallbackQuery(query.id, {
+          text: "Place selection expired. Start again.",
+          show_alert: true,
+        });
+        return;
+      }
+
+      await renderRootPicker(chatId, messageId, context);
       await telegram.answerCallbackQuery(query.id, {
         text: "Choose a starting place.",
       });
@@ -521,7 +552,10 @@ export function createRelayApp({
       }
 
       if (context.action === "details") {
-        await renderSessionDetails(chatId, messageId, context.sessionId);
+        await renderSessionDetails(chatId, messageId, context.sessionId, {
+          mode: context.mode || "open",
+          page: context.page || 0,
+        });
         await telegram.answerCallbackQuery(query.id, {
           text: "Session details loaded.",
         });
@@ -551,13 +585,15 @@ export function createRelayApp({
           controlChatId: chatId,
           panelMessageId: messageId,
           callbackQueryId: query.id,
+          mode: context.mode || "open",
+          page: context.page || 0,
         });
         return;
       }
 
       if (context.action === "archive") {
         await archiveSession(context.sessionId);
-        await renderSessionsPanel(chatId, messageId);
+        await renderSessionsPanel(chatId, messageId, context.page || 0);
         await telegram.answerCallbackQuery(query.id, {
           text: "Session archived.",
         });
@@ -566,7 +602,10 @@ export function createRelayApp({
 
       if (context.action === "restore") {
         await restoreSession(context.sessionId);
-        await renderSessionDetails(chatId, messageId, context.sessionId);
+        await renderSessionDetails(chatId, messageId, context.sessionId, {
+          mode: context.mode || "archived",
+          page: context.page || 0,
+        });
         await telegram.answerCallbackQuery(query.id, {
           text: "Session restored.",
         });
@@ -586,6 +625,26 @@ export function createRelayApp({
       await renderArchivedSessionsPanel(chatId, messageId);
       await telegram.answerCallbackQuery(query.id, {
         text: "Archived sessions loaded.",
+      });
+      return;
+    }
+
+    if (query.data.startsWith("sessions:page:")) {
+      const [, , mode, rawPage] = query.data.split(":");
+      const page = Number.parseInt(rawPage || "0", 10);
+      const currentPage = Number.isNaN(page) ? 0 : page;
+
+      if (mode === "archived") {
+        await renderArchivedSessionsPanel(chatId, messageId, currentPage);
+        await telegram.answerCallbackQuery(query.id, {
+          text: "Archived sessions loaded.",
+        });
+        return;
+      }
+
+      await renderSessionsPanel(chatId, messageId, currentPage);
+      await telegram.answerCallbackQuery(query.id, {
+        text: "Session list refreshed.",
       });
       return;
     }
@@ -664,7 +723,7 @@ export function createRelayApp({
           forumChat.id,
           session
             ? formatSessionDetails(session)
-            : "No Codex session is bound to this topic. Use Sessions in General or DM to bind one.",
+            : unboundTopicText("bind"),
           {
             message_thread_id: topicId,
             reply_markup: buildTopicKeyboard(session, topicKeyboardActions()),
@@ -741,7 +800,7 @@ export function createRelayApp({
         forumChat.id,
         session
           ? formatSessionDetails(session)
-          : "No Codex session is bound to this topic. Use Sessions in General or DM to bind one.",
+          : unboundTopicText("bind"),
         {
           message_thread_id: topicId,
           reply_markup: buildTopicKeyboard(session, topicKeyboardActions()),
@@ -811,14 +870,29 @@ export function createRelayApp({
     }
   }
 
-  async function renderSessionsPanel(chatId, messageId = null) {
+  async function renderSessionsPanel(chatId, messageId = null, page = 0) {
     await maybeApplySessionRetention();
     const sessions = (await store.listSessions()).slice(0, MAX_PANEL_SESSIONS);
+    const totalPages = Math.max(Math.ceil(sessions.length / SESSIONS_PAGE_SIZE), 1);
+    const currentPage = Math.max(0, Math.min(page, totalPages - 1));
     const text = formatSessionsPanel({
       forumTitle: forumChat.title || String(forumChat.id),
       sessions,
+      page: currentPage,
+      pageSize: SESSIONS_PAGE_SIZE,
     });
-    const replyMarkup = buildSessionsKeyboard(sessions, sessionKeyboardActions());
+    const replyMarkup = buildSessionsKeyboard(
+      sessions,
+      {
+        ...sessionKeyboardActions({
+          mode: "open",
+          page: currentPage,
+        }),
+        mode: "open",
+        page: currentPage,
+        pageSize: SESSIONS_PAGE_SIZE,
+      },
+    );
 
     if (!messageId) {
       return telegram.sendMessage(chatId, text, {
@@ -831,19 +905,28 @@ export function createRelayApp({
     });
   }
 
-  async function renderArchivedSessionsPanel(chatId, messageId = null) {
+  async function renderArchivedSessionsPanel(chatId, messageId = null, page = 0) {
     await maybeApplySessionRetention();
     const sessions = (await store.listSessions({ includeClosed: true }))
       .filter((session) => session.status === "closed")
       .slice(0, MAX_PANEL_SESSIONS);
+    const totalPages = Math.max(Math.ceil(sessions.length / SESSIONS_PAGE_SIZE), 1);
+    const currentPage = Math.max(0, Math.min(page, totalPages - 1));
     const text = formatSessionsPanel({
       forumTitle: forumChat.title || String(forumChat.id),
       sessions,
       mode: "archived",
+      page: currentPage,
+      pageSize: SESSIONS_PAGE_SIZE,
     });
     const replyMarkup = buildSessionsKeyboard(sessions, {
-      ...sessionKeyboardActions(),
+      ...sessionKeyboardActions({
+        mode: "archived",
+        page: currentPage,
+      }),
       mode: "archived",
+      page: currentPage,
+      pageSize: SESSIONS_PAGE_SIZE,
     });
 
     if (!messageId) {
@@ -871,8 +954,39 @@ export function createRelayApp({
     );
   }
 
-  async function renderHostPicker(chatId, messageId = null) {
+  async function renderProviderPicker(chatId, messageId = null) {
+    const providers = listAvailableProviders(codexConfig);
+    const text = [
+      "New session",
+      "",
+      "Choose which agent to start.",
+    ].join("\n");
+
+    const replyMarkup = {
+      inline_keyboard: [
+        ...providers.map((provider) => ([
+          {
+            text: formatProviderName(provider),
+            callback_data: `new:provider:${provider}`,
+          },
+        ])),
+        [
+          {
+            text: "Back",
+            callback_data: "dm:help",
+          },
+        ],
+      ],
+    };
+
+    return editOrSend(chatId, messageId, text, {
+      reply_markup: replyMarkup,
+    });
+  }
+
+  async function renderHostPicker(chatId, messageId = null, provider = codexConfig.defaultProvider) {
     const hosts = (await store.listHosts()).filter((host) => host.roots.length > 0);
+    const providerName = formatProviderName(provider);
 
     const text = hosts.length === 0
       ? [
@@ -884,6 +998,7 @@ export function createRelayApp({
       : [
           "New session",
           "",
+          `provider: ${providerName}`,
           "Choose where to start the new agent session.",
         ].join("\n");
 
@@ -891,14 +1006,21 @@ export function createRelayApp({
       ? buildDmHomeKeyboard()
       : {
           inline_keyboard: [
-            ...hosts.map((host) => [{
-              text: formatHostButtonLabel(host),
-              callback_data: `new:host:${host.id}`,
-            }]),
+            ...hosts.map((host) => {
+      const token = issueUiToken({
+        provider,
+        hostId: host.id,
+      });
+
+              return [{
+                text: formatHostButtonLabel(host),
+                callback_data: `new:host:${token}`,
+              }];
+            }),
             [
               {
-                text: "Back",
-                callback_data: "dm:help",
+                text: "Providers",
+                callback_data: "dm:new",
               },
             ],
           ],
@@ -909,8 +1031,10 @@ export function createRelayApp({
     });
   }
 
-  async function renderRootPicker(chatId, messageId, hostId) {
-    const host = await store.getHost(hostId);
+  async function renderRootPicker(chatId, messageId, context) {
+    const provider = normalizeProviderChoice(codexConfig, context.provider);
+    const host = await store.getHost(context.hostId);
+    const providerName = formatProviderName(provider);
 
     if (!host) {
       return editOrSend(chatId, messageId, "Node not found. Start again from New Session.", {
@@ -920,7 +1044,8 @@ export function createRelayApp({
 
     const rows = host.roots.map((rootPath) => {
       const token = issueUiToken({
-        hostId,
+        provider,
+        hostId: host.id,
         rootPath,
         path: rootPath,
         page: 0,
@@ -934,8 +1059,8 @@ export function createRelayApp({
 
     rows.push([
       {
-        text: "Back",
-        callback_data: "dm:new",
+        text: "Nodes",
+        callback_data: `new:provider:${provider}`,
       },
     ]);
 
@@ -945,6 +1070,7 @@ export function createRelayApp({
       [
         "New session",
         "",
+        `provider: ${providerName}`,
         `node: ${host.label}`,
         "Choose a starting place.",
       ].join("\n"),
@@ -965,6 +1091,7 @@ export function createRelayApp({
     const host = await store.getHost(context.hostId);
     const rows = pageEntries.map((entry) => {
       const token = issueUiToken({
+        provider: normalizeProviderChoice(codexConfig, context.provider),
         hostId: context.hostId,
         rootPath: context.rootPath,
         path: entry.path,
@@ -981,6 +1108,7 @@ export function createRelayApp({
       {
         text: "Use This Folder",
         callback_data: `new:use:${issueUiToken({
+          provider: normalizeProviderChoice(codexConfig, context.provider),
           hostId: context.hostId,
           rootPath: context.rootPath,
           path: context.path,
@@ -995,6 +1123,7 @@ export function createRelayApp({
       navRow.push({
         text: "Up",
         callback_data: `new:browse:${issueUiToken({
+          provider: normalizeProviderChoice(codexConfig, context.provider),
           hostId: context.hostId,
           rootPath: context.rootPath,
           path: path.dirname(context.path),
@@ -1007,6 +1136,7 @@ export function createRelayApp({
       navRow.push({
         text: "Prev",
         callback_data: `new:browse:${issueUiToken({
+          provider: normalizeProviderChoice(codexConfig, context.provider),
           hostId: context.hostId,
           rootPath: context.rootPath,
           path: context.path,
@@ -1019,6 +1149,7 @@ export function createRelayApp({
       navRow.push({
         text: "Next",
         callback_data: `new:browse:${issueUiToken({
+          provider: normalizeProviderChoice(codexConfig, context.provider),
           hostId: context.hostId,
           rootPath: context.rootPath,
           path: context.path,
@@ -1034,10 +1165,13 @@ export function createRelayApp({
     rows.push([
       {
         text: "Places",
-        callback_data: `new:roots:${context.hostId}`,
+        callback_data: `new:roots:${issueUiToken({
+          provider: normalizeProviderChoice(codexConfig, context.provider),
+          hostId: context.hostId,
+        })}`,
       },
       {
-        text: "Nodes",
+        text: "Providers",
         callback_data: "dm:new",
       },
     ]);
@@ -1045,6 +1179,7 @@ export function createRelayApp({
     const lines = [
       "New session",
       "",
+      `provider: ${formatProviderName(context.provider)}`,
       `node: ${host?.label || context.hostId}`,
       `root: ${displayPath(context.rootPath)}`,
       `folder: ${displayPath(context.path)}`,
@@ -1079,7 +1214,7 @@ export function createRelayApp({
     );
   }
 
-  async function renderSessionDetails(chatId, messageId, sessionId) {
+  async function renderSessionDetails(chatId, messageId, sessionId, panelContext = {}) {
     const session = await store.getSession(sessionId);
 
     if (!session) {
@@ -1087,13 +1222,16 @@ export function createRelayApp({
     }
 
     return editOrSend(chatId, messageId, formatSessionDetails(session), {
-      reply_markup: buildSessionDetailKeyboard(session, sessionKeyboardActions()),
+      reply_markup: buildSessionDetailKeyboard(
+        session,
+        sessionKeyboardActions(panelContext),
+      ),
     });
   }
 
   async function createTopicForSession(
     sessionId,
-    { controlChatId, panelMessageId, callbackQueryId },
+    { controlChatId, panelMessageId, callbackQueryId, mode = "open", page = 0 },
   ) {
     const session = await store.getSession(sessionId);
 
@@ -1102,7 +1240,7 @@ export function createRelayApp({
         text: "Session not found.",
         show_alert: true,
       });
-      await renderSessionsPanel(controlChatId, panelMessageId);
+      await renderSessionsPanel(controlChatId, panelMessageId, page);
       return;
     }
 
@@ -1110,12 +1248,12 @@ export function createRelayApp({
       await telegram.answerCallbackQuery(callbackQueryId, {
         text: "Session already has a topic.",
       });
-      await renderSessionDetails(controlChatId, panelMessageId, session.id);
+      await renderSessionDetails(controlChatId, panelMessageId, session.id, { mode, page });
       return;
     }
 
     await createTopicForNewSession(session);
-    await renderSessionDetails(controlChatId, panelMessageId, session.id);
+    await renderSessionDetails(controlChatId, panelMessageId, session.id, { mode, page });
     await telegram.answerCallbackQuery(callbackQueryId, {
       text: "Topic created. Open Topic.",
     });
@@ -1132,16 +1270,20 @@ export function createRelayApp({
       return;
     }
 
+    const provider = normalizeProviderChoice(codexConfig, context.provider);
+    const defaultModel = resolveProviderModel(codexConfig, provider);
+    const resolvedPath = await fs.realpath(context.path).catch(() => context.path);
     const sessionId = randomUUID();
     const session = await store.saveSession({
       id: sessionId,
-      label: path.basename(context.path) || context.path,
+      label: path.basename(resolvedPath) || resolvedPath,
       threadId: "",
-      cwd: context.path,
-      model: codexConfig.model,
+      provider,
+      cwd: resolvedPath,
+      model: defaultModel,
       latestAssistantMessage: "",
       latestUserPrompt: "",
-      createdVia: "telegram-ui",
+      createdVia: `${provider}-telegram-ui`,
       createdAt: now(),
       updatedAt: now(),
       status: "headless",
@@ -1188,7 +1330,7 @@ export function createRelayApp({
     if (!session || session.status !== "bound") {
       await telegram.sendMessage(
         forumChat.id,
-        "This topic is no longer bound to a Codex session.",
+        "This topic is no longer bound to an agent session.",
         { message_thread_id: messageThreadId },
       );
       return;
@@ -1200,7 +1342,7 @@ export function createRelayApp({
     if (!session || session.status !== "bound") {
       await telegram.sendMessage(
         forumChat.id,
-        "This topic is no longer bound to a Codex session.",
+        "This topic is no longer bound to an agent session.",
         { message_thread_id: messageThreadId },
       );
       return;
@@ -1213,12 +1355,14 @@ export function createRelayApp({
     });
 
     try {
+      const provider = session.provider || codexConfig.defaultProvider || "codex";
       const result = await runTurn({
-        codex: codexConfig,
+        runtime: codexConfig,
+        provider,
         prompt,
         cwd: session.cwd || codexConfig.defaultCwd,
         threadId: session.threadId,
-        model: session.model || codexConfig.model,
+        model: session.model || resolveProviderModel(codexConfig, provider),
         onProgress: (update) => {
           if (
             update.type === "command_started" ||
@@ -1251,9 +1395,13 @@ export function createRelayApp({
         activeRunSource: "",
         updatedAt: now(),
       });
-      await telegram.sendLongMessage(forumChat.id, `Codex failed.\n\n${error.message}`, {
+      await telegram.sendLongMessage(
+        forumChat.id,
+        `${formatProviderName(session.provider || codexConfig.defaultProvider || "codex")} failed.\n\n${error.message}`,
+        {
         message_thread_id: messageThreadId,
-      });
+        },
+      );
     }
   }
 
@@ -1336,11 +1484,12 @@ export function createRelayApp({
     return token;
   }
 
-  function issueSessionActionToken(action, sessionId) {
+  function issueSessionActionToken(action, sessionId, extra = {}) {
     return `session:ui:${issueUiToken({
       kind: "session-action",
       action,
       sessionId,
+      ...extra,
     })}`;
   }
 
@@ -1352,13 +1501,15 @@ export function createRelayApp({
     })}`;
   }
 
-  function sessionKeyboardActions() {
+  function sessionKeyboardActions({ mode = "open", page = 0 } = {}) {
     return {
-      bindSession: (session) => issueSessionActionToken("create", session.id),
-      showSessionDetails: (session) => issueSessionActionToken("details", session.id),
-      showLatestSessionReply: (session) => issueSessionActionToken("latest", session.id),
-      archiveSession: (session) => issueSessionActionToken("archive", session.id),
-      restoreSession: (session) => issueSessionActionToken("restore", session.id),
+      bindSession: (session) => issueSessionActionToken("create", session.id, { mode, page }),
+      showSessionDetails: (session) => issueSessionActionToken("details", session.id, { mode, page }),
+      showLatestSessionReply: (session) => issueSessionActionToken("latest", session.id, { mode, page }),
+      archiveSession: (session) => issueSessionActionToken("archive", session.id, { mode, page }),
+      restoreSession: (session) => issueSessionActionToken("restore", session.id, { mode, page }),
+      backToSessions: () => `sessions:page:${mode}:${page}`,
+      goToPage: (targetMode, targetPage) => `sessions:page:${targetMode}:${targetPage}`,
     };
   }
 
@@ -1544,7 +1695,7 @@ export function isCommand(text, command, botUsername = "") {
 export function createProgressState(session) {
   return {
     label: session.label,
-    phase: "waiting for Codex",
+    phase: "waiting for agent",
     command: "",
     reasoning: "",
     commandOutput: "",
@@ -1671,7 +1822,7 @@ export function formatProgressMessage(state) {
 
 export function formatPendingMessage(session, pendingAhead = 0) {
   if (pendingAhead <= 0) {
-    return `Continuing session: ${session.label}\nstate: waiting for Codex`;
+    return `Continuing session: ${session.label}\nstate: waiting for agent`;
   }
 
   const turnLabel = pendingAhead === 1 ? "turn" : "turns";
@@ -1752,6 +1903,32 @@ function formatHostButtonLabel(host) {
   const primary = host.label || host.id;
   const roots = host.roots.length > 0 ? displayPath(host.roots[0]) : "no roots";
   return `${truncateButtonText(primary, 16)} • ${truncateButtonText(roots, 18)}`;
+}
+
+function resolveProviderModel(runtimeConfig, provider) {
+  return runtimeConfig.providers?.[provider]?.model || runtimeConfig.model || "";
+}
+
+function listAvailableProviders(runtimeConfig) {
+  const providers = Object.keys(runtimeConfig.providers || {});
+
+  if (providers.length > 0) {
+    return providers;
+  }
+
+  return [runtimeConfig.defaultProvider || "codex"];
+}
+
+function normalizeProviderChoice(runtimeConfig, provider) {
+  const value = String(provider || "").toLowerCase();
+  return listAvailableProviders(runtimeConfig).includes(value)
+    ? value
+    : (runtimeConfig.defaultProvider || "codex");
+}
+
+function unboundTopicText(action = "") {
+  const suffix = action ? ` Use Sessions in General or DM to ${action} one.` : "";
+  return `No agent session is bound to this topic.${suffix}`;
 }
 
 function displayPath(value) {

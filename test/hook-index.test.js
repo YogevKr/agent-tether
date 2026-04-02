@@ -32,8 +32,37 @@ test("When SessionStart fires, then the local Codex session is indexed as headle
   assert.equal(session?.threadId, "session-1");
   assert.equal(session?.label, "agent-tether");
   assert.equal(session?.status, "headless");
+  assert.equal(session?.provider, "codex");
   assert.equal(session?.lastStartSource, "startup");
   assert.equal(session?.hostId, "mbp");
+});
+
+test("When a Claude Code SessionStart fires, then the provider is preserved", async () => {
+  const store = await createTempStore();
+
+  await applyHookEvent(
+    store,
+    {
+      hook_event_name: "SessionStart",
+      session_id: "claude-session-1",
+      cwd: TEST_WORKSPACE,
+      model: "claude-sonnet-4-5",
+      source: "resume",
+      host_id: "desktop",
+      provider: "claude",
+    },
+    {
+      now: () => "2026-04-02T12:00:00.000Z",
+    },
+  );
+
+  const session = await store.getSession("claude-session-1");
+
+  assert.equal(session?.provider, "claude");
+  assert.equal(session?.createdVia, "claude-hook");
+  assert.equal(session?.label, "agent-tether");
+  assert.equal(session?.model, "claude-sonnet-4-5");
+  assert.equal(session?.lastStartSource, "resume");
 });
 
 test("When Stop fires, then the latest assistant reply is saved without clearing bindings", async () => {

@@ -1,13 +1,18 @@
 import fs from "node:fs";
 import path from "node:path";
-import { assertAuthorizedUser, getBotConfig, getCodexConfig } from "./config.js";
-import { runCodexTurn } from "./codex.js";
+import {
+  assertAuthorizedUser,
+  getBotConfig,
+  getProviderModel,
+  getRuntimeConfig,
+} from "./config.js";
+import { runAgentTurn } from "./agent-runtime.js";
 import { formatTopicBootstrap, toTopicName } from "./session-view.js";
 import { StateStore } from "./state-store.js";
 import { TelegramClient, buildForumTopicUrl } from "./telegram.js";
 
 const botConfig = getBotConfig();
-const codexConfig = getCodexConfig();
+const runtimeConfig = getRuntimeConfig();
 const store = new StateStore(botConfig.stateFile);
 const telegram = new TelegramClient({
   token: botConfig.telegramToken,
@@ -22,14 +27,16 @@ async function main() {
     process.exit(1);
   }
 
-  const cwd = resolveCwd(args.cwd || codexConfig.defaultCwd);
+  const cwd = resolveCwd(args.cwd || runtimeConfig.defaultCwd);
   const label = args.label || deriveLabel(args.prompt, cwd);
+  const defaultProvider = runtimeConfig.defaultProvider || "codex";
 
-  const result = await runCodexTurn({
-    codex: codexConfig,
+  const result = await runAgentTurn({
+    runtime: runtimeConfig,
+    provider: defaultProvider,
     prompt: args.prompt,
     cwd,
-    model: args.model,
+    model: args.model || getProviderModel(runtimeConfig, defaultProvider),
   });
 
   const now = new Date().toISOString();
@@ -37,15 +44,16 @@ async function main() {
     id: result.threadId,
     label,
     threadId: result.threadId,
+    provider: defaultProvider,
     cwd,
-    model: args.model || codexConfig.model,
+    model: args.model || getProviderModel(runtimeConfig, defaultProvider),
     latestAssistantMessage: result.message,
     latestUserPrompt: args.prompt,
-    createdVia: "non-interactive-cli",
+    createdVia: `${defaultProvider}-non-interactive-cli`,
     createdAt: now,
     updatedAt: now,
     status: "headless",
-    hostId: codexConfig.hostId,
+    hostId: runtimeConfig.hostId,
   });
 
   let finalSession = session;
@@ -54,7 +62,7 @@ async function main() {
     finalSession = await createTopicForSession(session);
   }
 
-  if (codexConfig.hubUrl) {
+  if (runtimeConfig.hubUrl) {
     await postSessionToHub(finalSession);
   }
 
@@ -65,6 +73,7 @@ async function main() {
 
   console.log(`session_id=${finalSession.id}`);
   console.log(`thread_id=${finalSession.threadId}`);
+  console.log(`provider=${finalSession.provider}`);
   console.log(`status=${finalSession.status}`);
 
   if (finalSession.topicLink) {
@@ -134,11 +143,11 @@ async function notifyControlChat(chatId, session) {
 }
 
 async function postSessionToHub(session) {
-  const response = await fetch(`${codexConfig.hubUrl.replace(/\/+$/, "")}/api/sessions/upsert`, {
+  const response = await fetch(`${runtimeConfig.hubUrl.replace(/\/+$/, "")}/api/sessions/upsert`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      ...(codexConfig.hubToken ? { "x-relay-token": codexConfig.hubToken } : {}),
+      ...(runtimeConfig.hubToken ? { "x-relay-token": runtimeConfig.hubToken } : {}),
     },
     body: JSON.stringify(session),
   });
