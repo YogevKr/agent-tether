@@ -1,0 +1,29 @@
+{
+  "name": "agent-tether",
+  "description": "Bind local coding-agent CLI sessions to Telegram topics and continue them across devices.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "keywords": [
+    "codex",
+    "telegram",
+    "agent",
+    "cli",
+    "hooks"
+  ],
+  "scripts": {
+    "bot": "node src/relay.js",
+    "worker": "node src/worker.js",
+    "start-session": "node src/start-session.js",
+    "discover-telegram": "node src/discover-telegram.js",
+    "install-global-hooks": "node src/install-global-hooks.js",
+    "install-launch-agent": "node src/install-launch-agent.js",
+    "uninstall-launch-agent": "node src/uninstall-launch-agent.js",
+    "test": "node --test",
+    "check": "node --check src/*.js test/*.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
