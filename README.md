@@ -172,7 +172,7 @@ After the next hook event, that session appears in Telegram `/sessions` with its
 - `AGENT_PROVIDER` is the fallback default outside the Telegram new-session picker
 - Locally indexed sessions keep whichever provider started them
 - `CODEX_DEFAULT_ARGS` defaults to `--yolo`
-- `CLAUDE_DEFAULT_ARGS` defaults to empty
+- `CLAUDE_DEFAULT_ARGS` defaults to `--dangerously-skip-permissions`
 - If you keep `--yolo`, Agent Tether will not also add explicit approval/sandbox config flags on top
 - `RELAY_AUTO_ARCHIVE_AFTER_DAYS` defaults to `14`
 - `RELAY_AUTO_PRUNE_AFTER_DAYS` defaults to `60`

@@ -69,7 +69,9 @@ export function getRuntimeConfig() {
         bin: process.env.CLAUDE_BIN || "claude",
         model: process.env.CLAUDE_MODEL || "",
         permissionMode: process.env.CLAUDE_PERMISSION_MODE || "",
-        defaultArgs: parseCommandArgs(process.env.CLAUDE_DEFAULT_ARGS || ""),
+        defaultArgs: parseCommandArgs(
+          process.env.CLAUDE_DEFAULT_ARGS || "--dangerously-skip-permissions",
+        ),
       },
     },
   };
