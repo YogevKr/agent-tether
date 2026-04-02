@@ -32,6 +32,7 @@ export function createRelayApp({
   sleep = defaultSleep,
 }) {
   const sessionQueues = new Map();
+  const sessionQueueDepths = new Map();
 
   let offset = 0;
   let botUsername = "";
@@ -258,10 +259,29 @@ export function createRelayApp({
       return;
     }
 
+    const pendingAhead = await countPendingTurns(session);
+    const progressMessage = await telegram.sendMessage(
+      forumChat.id,
+      formatPendingMessage(session, pendingAhead),
+      { message_thread_id: topicId },
+    );
+
+    if (hubServer && session.hostId && session.hostId !== botConfig.hostId) {
+      await hubServer.queueRemoteJob(session, {
+        prompt: text,
+        chatId: forumChat.id,
+        messageThreadId: topicId,
+        progressMessageId: progressMessage.message_id,
+        pendingAhead,
+      });
+      return;
+    }
+
     enqueueSession(session.id, () =>
       continueBoundSession(session.id, {
         prompt: text,
         messageThreadId: topicId,
+        progressMessage,
       }),
     );
   }
@@ -422,8 +442,8 @@ export function createRelayApp({
     });
   }
 
-  async function continueBoundSession(sessionId, { prompt, messageThreadId }) {
-    const session = await store.getSession(sessionId);
+  async function continueBoundSession(sessionId, { prompt, messageThreadId, progressMessage }) {
+    let session = await store.getSession(sessionId);
 
     if (!session || session.status !== "bound") {
       await telegram.sendMessage(
@@ -434,21 +454,40 @@ export function createRelayApp({
       return;
     }
 
-    const progressMessage = await telegram.sendMessage(
-      forumChat.id,
-      `Continuing session: ${session.label}\nstate: waiting for Codex`,
-      { message_thread_id: messageThreadId },
-    );
+    await waitForSessionAvailability(sessionId);
+    session = await store.getSession(sessionId);
 
-    if (hubServer && session.hostId && session.hostId !== botConfig.hostId) {
-      await hubServer.queueRemoteJob(session, {
-        prompt,
-        chatId: forumChat.id,
-        messageThreadId,
-        progressMessageId: progressMessage.message_id,
-      });
+    if (!session || session.status !== "bound") {
+      await telegram.sendMessage(
+        forumChat.id,
+        "This topic is no longer bound to a Codex session.",
+        { message_thread_id: messageThreadId },
+      );
       return;
     }
+
+    await store.updateSession(session.id, {
+      isBusy: true,
+      activeRunSource: "telegram",
+      updatedAt: now(),
+    });
+
+    if (progressMessage) {
+      await safeEditMessage(
+        forumChat.id,
+        progressMessage.message_id,
+        `Continuing session: ${session.label}\nstate: waiting for Codex`,
+        { message_thread_id: messageThreadId },
+      );
+    }
+
+    const activeProgressMessage =
+      progressMessage ||
+      (await telegram.sendMessage(
+        forumChat.id,
+        `Continuing session: ${session.label}\nstate: waiting for Codex`,
+        { message_thread_id: messageThreadId },
+      ));
 
     const progressState = createProgressState(session);
     let dirty = false;
@@ -474,7 +513,7 @@ export function createRelayApp({
         .then(() =>
           safeEditMessage(
             forumChat.id,
-            progressMessage.message_id,
+            activeProgressMessage.message_id,
             preview,
             { message_thread_id: messageThreadId },
           ),
@@ -513,21 +552,28 @@ export function createRelayApp({
         threadId: result.threadId,
         latestUserPrompt: prompt,
         latestAssistantMessage: result.message,
+        isBusy: false,
+        activeRunSource: "",
         updatedAt: now(),
       });
 
       await editChain.catch(() => {});
       await telegram.replaceProgressMessage(
         forumChat.id,
-        progressMessage,
+        activeProgressMessage,
         result.message,
         { message_thread_id: messageThreadId },
       );
     } catch (error) {
+      await store.updateSession(session.id, {
+        isBusy: false,
+        activeRunSource: "",
+        updatedAt: now(),
+      });
       await editChain.catch(() => {});
       await telegram.replaceProgressMessage(
         forumChat.id,
-        progressMessage,
+        activeProgressMessage,
         `Codex failed.\n\n${error.message}`,
         { message_thread_id: messageThreadId },
       );
@@ -539,11 +585,20 @@ export function createRelayApp({
   }
 
   function enqueueSession(sessionId, task) {
+    sessionQueueDepths.set(sessionId, (sessionQueueDepths.get(sessionId) || 0) + 1);
     const previous = sessionQueues.get(sessionId) || Promise.resolve();
     const next = previous
       .catch(() => {})
       .then(task)
       .finally(() => {
+        const remaining = Math.max((sessionQueueDepths.get(sessionId) || 1) - 1, 0);
+
+        if (remaining === 0) {
+          sessionQueueDepths.delete(sessionId);
+        } else {
+          sessionQueueDepths.set(sessionId, remaining);
+        }
+
         if (sessionQueues.get(sessionId) === next) {
           sessionQueues.delete(sessionId);
         }
@@ -580,6 +635,32 @@ export function createRelayApp({
       if (!String(error.message).includes("message is not modified")) {
         throw error;
       }
+    }
+  }
+
+  async function countPendingTurns(session) {
+    const queueDepth = sessionQueueDepths.get(session.id) || 0;
+    const sessionBusy = session.isBusy ? 1 : 0;
+
+    if (hubServer && session.hostId && session.hostId !== botConfig.hostId) {
+      const pendingJobs = await store.listJobsForSession(session.id, {
+        statuses: ["queued", "running"],
+      });
+      return Math.max(pendingJobs.length, sessionBusy);
+    }
+
+    return Math.max(queueDepth, sessionBusy);
+  }
+
+  async function waitForSessionAvailability(sessionId) {
+    while (true) {
+      const session = await store.getSession(sessionId);
+
+      if (!session || !session.isBusy) {
+        return session;
+      }
+
+      await sleep(500);
     }
   }
 
@@ -621,6 +702,30 @@ export function createProgressState(session) {
 }
 
 export function applyProgressUpdate(state, update) {
+  if (update.type === "status") {
+    if (update.phase) {
+      state.phase = update.phase;
+    }
+
+    if (update.command !== undefined) {
+      state.command = update.command || "";
+    }
+
+    if (update.reasoning !== undefined) {
+      state.reasoning = tailText(update.reasoning || "", MAX_REASONING_CHARS);
+    }
+
+    if (update.commandOutput !== undefined) {
+      state.commandOutput = tailText(update.commandOutput || "", MAX_COMMAND_OUTPUT_CHARS);
+    }
+
+    if (update.draftReply !== undefined) {
+      state.draftReply = tailText(update.draftReply || "", MAX_DRAFT_REPLY_CHARS);
+    }
+
+    return state;
+  }
+
   if (update.type === "thread_started") {
     state.phase = "thread ready";
   }
@@ -711,6 +816,19 @@ export function formatProgressMessage(state) {
   }
 
   return lines.join("\n");
+}
+
+export function formatPendingMessage(session, pendingAhead = 0) {
+  if (pendingAhead <= 0) {
+    return `Continuing session: ${session.label}\nstate: waiting for Codex`;
+  }
+
+  const turnLabel = pendingAhead === 1 ? "turn" : "turns";
+  return [
+    `Continuing session: ${session.label}`,
+    "state: queued",
+    `ahead: ${pendingAhead} ${turnLabel}`,
+  ].join("\n");
 }
 
 export function appendTail(current, delta, maxChars) {

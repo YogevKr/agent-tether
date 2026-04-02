@@ -85,27 +85,47 @@ npm run bot
 Run the hub in the background and start it automatically at login on macOS:
 
 ```bash
-npm run install-launch-agent
+npm run install-launch-agent -- --mode hub
 ```
 
 Useful checks:
 
 ```bash
-launchctl print gui/$(id -u)/dev.agent-tether
-tail -f ~/Library/Logs/agent-tether.stdout.log
-tail -f ~/Library/Logs/agent-tether.stderr.log
+launchctl print gui/$(id -u)/dev.agent-tether.hub
+tail -f ~/Library/Logs/agent-tether-hub.stdout.log
+tail -f ~/Library/Logs/agent-tether-hub.stderr.log
 ```
 
 Remove the background service:
 
 ```bash
-npm run uninstall-launch-agent
+npm run uninstall-launch-agent -- --mode hub
 ```
 
 On every non-hub computer, run the worker:
 
 ```bash
 npm run worker
+```
+
+Run the worker in the background and start it automatically at login on macOS:
+
+```bash
+npm run install-launch-agent -- --mode worker
+```
+
+Useful checks:
+
+```bash
+launchctl print gui/$(id -u)/dev.agent-tether.worker
+tail -f ~/Library/Logs/agent-tether-worker.stdout.log
+tail -f ~/Library/Logs/agent-tether-worker.stderr.log
+```
+
+Remove the background worker:
+
+```bash
+npm run uninstall-launch-agent -- --mode worker
 ```
 
 Start Codex normally from the computer:

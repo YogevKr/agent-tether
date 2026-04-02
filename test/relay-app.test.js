@@ -151,6 +151,82 @@ test("When a topic message continues a bound session, then relay streams progres
   assert.ok(telegram.calls.sendChatAction.length >= 1);
 });
 
+test("When a second topic prompt arrives while Codex is still running, then it is acknowledged as queued", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  let releaseFirstTurn = () => {};
+  let markFirstTurnStarted = () => {};
+  const firstTurnStarted = new Promise((resolve) => {
+    markFirstTurnStarted = resolve;
+  });
+  let runCount = 0;
+  const app = createTestApp({
+    store,
+    telegram,
+    runTurn: async () => {
+      runCount += 1;
+
+      if (runCount === 1) {
+        markFirstTurnStarted();
+        await new Promise((resolve) => {
+          releaseFirstTurn = resolve;
+        });
+
+        return {
+          threadId: "thread-queued",
+          message: "First reply",
+        };
+      }
+
+      return {
+        threadId: "thread-queued",
+        message: "Second reply",
+      };
+    },
+  });
+
+  await store.saveSession({
+    id: "session-queued",
+    label: "Queued session",
+    threadId: "thread-queued",
+    cwd: "/repo",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+    status: "bound",
+    forumChatId: "-1001",
+    topicId: 18,
+    topicName: "Queued session",
+    topicLink: "https://t.me/c/1001/18",
+  });
+
+  await app.initialize();
+  await app.handleUpdate({
+    message: {
+      text: "first prompt",
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: 344735105 },
+      message_thread_id: 18,
+    },
+  });
+  await app.handleUpdate({
+    message: {
+      text: "second prompt",
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: 344735105 },
+      message_thread_id: 18,
+    },
+  });
+
+  const queuedNotice = telegram.calls.sendMessage.at(-1);
+
+  assert.match(queuedNotice.text, /state: queued/);
+  assert.match(queuedNotice.text, /ahead: 1 turn/);
+
+  await firstTurnStarted;
+  releaseFirstTurn();
+  await app.waitForIdle();
+});
+
 test("When a topic message targets a remote host session, then relay queues the job instead of running it locally", async () => {
   const store = await createTempStore();
   const telegram = createFakeTelegram();

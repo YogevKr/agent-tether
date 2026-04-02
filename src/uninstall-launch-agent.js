@@ -1,13 +1,29 @@
 import fs from "node:fs/promises";
-import { getLaunchAgentPaths, LAUNCH_AGENT_LABEL, launchctlRemove } from "./launch-agent.js";
+import {
+  getLaunchAgentModeConfig,
+  getLaunchAgentPaths,
+  launchctlRemove,
+} from "./launch-agent.js";
 
 async function main() {
-  const paths = getLaunchAgentPaths();
+  const mode = parseMode(process.argv.slice(2));
+  const config = getLaunchAgentModeConfig(mode);
+  const paths = getLaunchAgentPaths({ mode });
 
-  await launchctlRemove(LAUNCH_AGENT_LABEL);
+  await launchctlRemove(config.label);
   await fs.unlink(paths.plistPath).catch(() => {});
 
   console.log(`removed: ${paths.plistPath}`);
+}
+
+function parseMode(argv) {
+  const index = argv.indexOf("--mode");
+
+  if (index === -1) {
+    return "hub";
+  }
+
+  return argv[index + 1] || "hub";
 }
 
 await main();

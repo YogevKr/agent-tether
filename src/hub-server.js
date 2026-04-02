@@ -110,7 +110,10 @@ export function createHubServer({
 
         await store.updateSession(session.id, {
           threadId: payload.threadId || session.threadId,
+          latestUserPrompt: job.prompt || session.latestUserPrompt,
           latestAssistantMessage: payload.message || session.latestAssistantMessage,
+          isBusy: false,
+          activeRunSource: "",
           updatedAt: now(),
         });
 
@@ -147,7 +150,10 @@ export function createHubServer({
         server.close((error) => (error ? reject(error) : resolve()));
       });
     },
-    async queueRemoteJob(session, { prompt, chatId, messageThreadId, progressMessageId }) {
+    async queueRemoteJob(
+      session,
+      { prompt, chatId, messageThreadId, progressMessageId, pendingAhead = 0 },
+    ) {
       return store.createJob({
         id: randomUUID(),
         sessionId: session.id,
@@ -157,7 +163,10 @@ export function createHubServer({
         chatId,
         messageThreadId,
         progressMessageId,
-        progressState: createProgressState(session),
+        progressState: {
+          ...createProgressState(session),
+          phase: pendingAhead > 0 ? "queued" : "waiting for Codex",
+        },
         createdAt: now(),
         updatedAt: now(),
       });

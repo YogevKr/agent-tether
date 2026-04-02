@@ -7,29 +7,51 @@ import { PROJECT_ROOT } from "./config.js";
 
 const execFileAsync = promisify(execFile);
 
-export const LAUNCH_AGENT_LABEL = "dev.agent-tether";
+export const LAUNCH_AGENT_MODE = {
+  hub: {
+    label: "dev.agent-tether.hub",
+    script: "src/relay.js",
+    stdoutLog: "agent-tether-hub.stdout.log",
+    stderrLog: "agent-tether-hub.stderr.log",
+  },
+  worker: {
+    label: "dev.agent-tether.worker",
+    script: "src/worker.js",
+    stdoutLog: "agent-tether-worker.stdout.log",
+    stderrLog: "agent-tether-worker.stderr.log",
+  },
+};
 
-export function getLaunchAgentPaths(homeDir = os.homedir()) {
+export const LAUNCH_AGENT_LABEL = LAUNCH_AGENT_MODE.hub.label;
+
+export function getLaunchAgentPaths({
+  homeDir = os.homedir(),
+  mode = "hub",
+} = {}) {
+  const config = getLaunchAgentModeConfig(mode);
   const launchAgentsDir = path.join(homeDir, "Library", "LaunchAgents");
   const logsDir = path.join(homeDir, "Library", "Logs");
 
   return {
     launchAgentsDir,
     logsDir,
-    plistPath: path.join(launchAgentsDir, `${LAUNCH_AGENT_LABEL}.plist`),
-    stdoutPath: path.join(logsDir, "agent-tether.stdout.log"),
-    stderrPath: path.join(logsDir, "agent-tether.stderr.log"),
+    plistPath: path.join(launchAgentsDir, `${config.label}.plist`),
+    stdoutPath: path.join(logsDir, config.stdoutLog),
+    stderrPath: path.join(logsDir, config.stderrLog),
   };
 }
 
 export function buildLaunchAgentPlist({
-  label = LAUNCH_AGENT_LABEL,
+  mode = "hub",
+  label = getLaunchAgentModeConfig(mode).label,
   nodeBin = process.execPath,
   projectRoot = PROJECT_ROOT,
   pathEnv = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-  stdoutPath = getLaunchAgentPaths().stdoutPath,
-  stderrPath = getLaunchAgentPaths().stderrPath,
+  stdoutPath = getLaunchAgentPaths({ mode }).stdoutPath,
+  stderrPath = getLaunchAgentPaths({ mode }).stderrPath,
 } = {}) {
+  const config = getLaunchAgentModeConfig(mode);
+
   return [
     `<?xml version="1.0" encoding="UTF-8"?>`,
     `<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">`,
@@ -40,7 +62,7 @@ export function buildLaunchAgentPlist({
     `  <key>ProgramArguments</key>`,
     `  <array>`,
     `    <string>${escapeXml(nodeBin)}</string>`,
-    `    <string>${escapeXml(path.join(projectRoot, "src/relay.js"))}</string>`,
+    `    <string>${escapeXml(path.join(projectRoot, config.script))}</string>`,
     `  </array>`,
     `  <key>WorkingDirectory</key>`,
     `  <string>${escapeXml(projectRoot)}</string>`,
@@ -64,7 +86,7 @@ export function buildLaunchAgentPlist({
 }
 
 export async function writeLaunchAgentPlist(options = {}) {
-  const paths = getLaunchAgentPaths();
+  const paths = getLaunchAgentPaths({ mode: options.mode });
 
   await fs.mkdir(paths.launchAgentsDir, { recursive: true });
   await fs.mkdir(paths.logsDir, { recursive: true });
@@ -102,6 +124,16 @@ export async function launchctlRemove(label = LAUNCH_AGENT_LABEL) {
 
 function launchDomain() {
   return `gui/${process.getuid()}`;
+}
+
+export function getLaunchAgentModeConfig(mode = "hub") {
+  const config = LAUNCH_AGENT_MODE[mode];
+
+  if (!config) {
+    throw new Error(`Unknown launch agent mode: ${mode}`);
+  }
+
+  return config;
 }
 
 function escapeXml(value) {

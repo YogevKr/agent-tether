@@ -37,6 +37,7 @@ export async function applyHookEvent(store, input, { now = () => new Date().toIS
         lastHookEvent: eventName,
         lastStartSource: String(input.source || ""),
         hostId: String(input.host_id || ""),
+        isBusy: false,
       },
       defaults,
     );
@@ -56,6 +57,8 @@ export async function applyHookEvent(store, input, { now = () => new Date().toIS
         transcriptPath: String(input.transcript_path || ""),
         lastHookEvent: eventName,
         hostId: String(input.host_id || ""),
+        isBusy: true,
+        activeRunSource: "local-cli",
       },
       defaults,
     );
@@ -75,6 +78,8 @@ export async function applyHookEvent(store, input, { now = () => new Date().toIS
         transcriptPath: String(input.transcript_path || ""),
         lastHookEvent: eventName,
         hostId: String(input.host_id || ""),
+        isBusy: false,
+        activeRunSource: "",
       },
       defaults,
     );

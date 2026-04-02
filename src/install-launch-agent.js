@@ -1,5 +1,5 @@
 import {
-  LAUNCH_AGENT_LABEL,
+  getLaunchAgentModeConfig,
   launchctlBootstrap,
   launchctlBootout,
   launchctlKickstart,
@@ -7,16 +7,28 @@ import {
 } from "./launch-agent.js";
 
 async function main() {
-  const paths = await writeLaunchAgentPlist();
+  const mode = parseMode(process.argv.slice(2));
+  const config = getLaunchAgentModeConfig(mode);
+  const paths = await writeLaunchAgentPlist({ mode });
 
-  await launchctlBootout(LAUNCH_AGENT_LABEL);
+  await launchctlBootout(config.label);
   await launchctlBootstrap(paths.plistPath);
-  await launchctlKickstart(LAUNCH_AGENT_LABEL);
+  await launchctlKickstart(config.label);
 
   console.log(`installed: ${paths.plistPath}`);
   console.log(`stdout: ${paths.stdoutPath}`);
   console.log(`stderr: ${paths.stderrPath}`);
-  console.log(`status: launchctl print gui/${process.getuid()}/${LAUNCH_AGENT_LABEL}`);
+  console.log(`status: launchctl print gui/${process.getuid()}/${config.label}`);
+}
+
+function parseMode(argv) {
+  const index = argv.indexOf("--mode");
+
+  if (index === -1) {
+    return "hub";
+  }
+
+  return argv[index + 1] || "hub";
 }
 
 await main();

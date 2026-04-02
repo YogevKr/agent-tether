@@ -46,6 +46,8 @@ test("When Stop fires, then the latest assistant reply is saved without clearing
     createdAt: "2026-04-02T10:00:00.000Z",
     updatedAt: "2026-04-02T10:00:00.000Z",
     status: "bound",
+    isBusy: true,
+    activeRunSource: "local-cli",
     forumChatId: "-1001",
     topicId: 12,
     topicName: "relay",
@@ -69,7 +71,33 @@ test("When Stop fires, then the latest assistant reply is saved without clearing
 
   assert.equal(session?.latestAssistantMessage, "Done locally.");
   assert.equal(session?.status, "bound");
+  assert.equal(session?.isBusy, false);
+  assert.equal(session?.activeRunSource, "");
   assert.equal(stopHookResponse().continue, true);
+});
+
+test("When UserPromptSubmit fires, then the session is marked busy until Stop", async () => {
+  const store = await createTempStore();
+
+  await applyHookEvent(
+    store,
+    {
+      hook_event_name: "UserPromptSubmit",
+      session_id: "session-3",
+      cwd: "/repo",
+      prompt: "continue from laptop",
+      host_id: "mbp",
+    },
+    {
+      now: () => "2026-04-02T12:00:00.000Z",
+    },
+  );
+
+  const session = await store.getSession("session-3");
+
+  assert.equal(session?.latestUserPrompt, "continue from laptop");
+  assert.equal(session?.isBusy, true);
+  assert.equal(session?.activeRunSource, "local-cli");
 });
 
 async function createTempStore() {

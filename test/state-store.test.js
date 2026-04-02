@@ -91,3 +91,52 @@ test("When upserting an indexed session, then existing topic binding is preserve
   assert.equal(session?.latestAssistantMessage, "Updated from local Codex");
   assert.equal(session?.status, "bound");
 });
+
+test("When pulling queued jobs, then busy sessions are skipped until they become idle", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-store-"));
+  const store = new StateStore(path.join(tempDir, "state.json"));
+
+  await store.saveSession({
+    id: "session-4",
+    label: "Queued",
+    threadId: "thread-4",
+    cwd: "/repo",
+    hostId: "mbp",
+    isBusy: true,
+    activeRunSource: "local-cli",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+  });
+
+  await store.createJob({
+    id: "job-1",
+    sessionId: "session-4",
+    hostId: "mbp",
+    prompt: "queued prompt",
+    status: "queued",
+    createdAt: "2026-04-02T10:01:00.000Z",
+    updatedAt: "2026-04-02T10:01:00.000Z",
+  });
+
+  const skipped = await store.pullQueuedJob("mbp", {
+    now: "2026-04-02T10:02:00.000Z",
+  });
+
+  assert.equal(skipped, null);
+
+  await store.updateSession("session-4", {
+    isBusy: false,
+    activeRunSource: "",
+    updatedAt: "2026-04-02T10:03:00.000Z",
+  });
+
+  const claimed = await store.pullQueuedJob("mbp", {
+    now: "2026-04-02T10:04:00.000Z",
+  });
+  const session = await store.getSession("session-4");
+
+  assert.equal(claimed?.id, "job-1");
+  assert.equal(claimed?.status, "running");
+  assert.equal(session?.isBusy, true);
+  assert.equal(session?.activeRunSource, "telegram");
+});

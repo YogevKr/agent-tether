@@ -148,6 +148,25 @@ export class StateStore {
     return state.sessions[sessionId] || null;
   }
 
+  async listJobsForSession(sessionId, { statuses = [] } = {}) {
+    const state = await this.read();
+    const allowedStatuses = new Set(statuses.map((status) => String(status)));
+
+    return Object.values(state.jobs)
+      .filter((job) => {
+        if (job.sessionId !== String(sessionId)) {
+          return false;
+        }
+
+        if (allowedStatuses.size === 0) {
+          return true;
+        }
+
+        return allowedStatuses.has(job.status);
+      })
+      .sort(compareJobs);
+  }
+
   async createJob(job) {
     const state = await this.read();
     const normalized = normalizeJob(job);
@@ -184,7 +203,11 @@ export class StateStore {
     const state = await this.read();
     const next = Object.values(state.jobs)
       .filter((job) => job.hostId === String(hostId) && job.status === "queued")
-      .sort(compareJobs)[0];
+      .sort(compareJobs)
+      .find((job) => {
+        const session = state.sessions[job.sessionId];
+        return session && !session.isBusy;
+      });
 
     if (!next) {
       return null;
@@ -198,6 +221,12 @@ export class StateStore {
     });
 
     state.jobs[claimed.id] = claimed;
+    state.sessions[claimed.sessionId] = normalizeSession({
+      ...state.sessions[claimed.sessionId],
+      isBusy: true,
+      activeRunSource: "telegram",
+      updatedAt: now,
+    });
     await this.write(state);
     return claimed;
   }
@@ -275,6 +304,8 @@ function normalizeSession(session) {
       session.bootstrapMessageId === ""
         ? null
         : Number(session.bootstrapMessageId),
+    isBusy: Boolean(session.isBusy),
+    activeRunSource: String(session.activeRunSource || ""),
   };
 }
 
