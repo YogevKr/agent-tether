@@ -9,6 +9,7 @@ import {
 test("When building a fresh codex turn, then cwd and prompt are included", () => {
   const args = buildCodexArgs({
     codex: {
+      defaultArgs: ["--yolo"],
       model: "gpt-5.4",
       approvalPolicy: "never",
       sandboxMode: "workspace-write",
@@ -22,6 +23,7 @@ test("When building a fresh codex turn, then cwd and prompt are included", () =>
   });
 
   assert.deepEqual(args, [
+    "--yolo",
     "exec",
     "--json",
     "-o",
@@ -29,10 +31,6 @@ test("When building a fresh codex turn, then cwd and prompt are included", () =>
     "--skip-git-repo-check",
     "-m",
     "gpt-5.4",
-    "-c",
-    'approval_policy="never"',
-    "-c",
-    'sandbox_mode="workspace-write"',
     "-C",
     "/repo",
     "Inspect the repo",

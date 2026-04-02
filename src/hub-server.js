@@ -9,10 +9,12 @@ import {
 
 export function createHubServer({
   botConfig,
+  codexConfig = null,
   store,
   telegram,
   now = () => new Date().toISOString(),
   logger = console,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 }) {
   const server = http.createServer(async (request, response) => {
     try {
@@ -34,6 +36,12 @@ export function createHubServer({
         assertAuthorized(request, botConfig.hubToken);
         const payload = await readJson(request);
         const hostId = String(payload.hostId || "");
+        await store.upsertHost(hostId, {
+          label: payload.label || hostId,
+          defaultCwd: payload.defaultCwd || "",
+          roots: payload.roots || [],
+          lastSeenAt: now(),
+        });
         const job = await store.pullQueuedJob(hostId, { now: now() });
 
         if (!job) {
@@ -100,6 +108,17 @@ export function createHubServer({
         }
 
         const isFailure = Boolean(payload.error);
+        if (job.kind === "browse-dir") {
+          await store.updateJob(jobId, {
+            status: isFailure ? "failed" : "completed",
+            updatedAt: now(),
+            completedAt: now(),
+            entries: payload.entries || [],
+            error: payload.error || "",
+          });
+          return sendJson(response, 200, { ok: true });
+        }
+
         await store.updateJob(jobId, {
           status: isFailure ? "failed" : "completed",
           updatedAt: now(),
@@ -140,6 +159,15 @@ export function createHubServer({
 
   return {
     async start() {
+      if (codexConfig) {
+        await store.upsertHost(botConfig.hostId, {
+          label: botConfig.hostId,
+          defaultCwd: codexConfig.defaultCwd,
+          roots: codexConfig.startRoots,
+          lastSeenAt: now(),
+        });
+      }
+
       await new Promise((resolve) => {
         server.listen(botConfig.hubPort, botConfig.hubBindHost, resolve);
       });
@@ -156,6 +184,7 @@ export function createHubServer({
     ) {
       return store.createJob({
         id: randomUUID(),
+        kind: "run-turn",
         sessionId: session.id,
         hostId: session.hostId,
         prompt,
@@ -170,6 +199,36 @@ export function createHubServer({
         createdAt: now(),
         updatedAt: now(),
       });
+    },
+    async requestDirectoryBrowse(hostId, { directoryPath, rootPath, timeoutMs = 8000 }) {
+      const browseJob = await store.createJob({
+        id: randomUUID(),
+        kind: "browse-dir",
+        sessionId: "",
+        hostId,
+        browsePath: directoryPath,
+        rootPath,
+        status: "queued",
+        createdAt: now(),
+        updatedAt: now(),
+      });
+      const startedAt = Date.now();
+
+      while (Date.now() - startedAt < timeoutMs) {
+        const latest = await store.getJob(browseJob.id);
+
+        if (latest?.status === "completed") {
+          return latest.entries || [];
+        }
+
+        if (latest?.status === "failed") {
+          throw new Error(latest.error || "Directory listing failed.");
+        }
+
+        await sleep(200);
+      }
+
+      throw new Error("Directory listing timed out.");
     },
   };
 }

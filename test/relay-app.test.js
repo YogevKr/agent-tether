@@ -6,6 +6,8 @@ import path from "node:path";
 import { createRelayApp } from "../src/relay-app.js";
 import { StateStore } from "../src/state-store.js";
 
+const TEST_USER_ID = 123456789;
+
 test("When /sessions is requested in DM, then relay shows create and open actions", async () => {
   const store = await createTempStore();
   const telegram = createFakeTelegram();
@@ -38,8 +40,8 @@ test("When /sessions is requested in DM, then relay shows create and open action
   await app.handleUpdate({
     message: {
       text: "/sessions",
-      chat: { id: 344735105, type: "private" },
-      from: { id: 344735105 },
+      chat: { id: TEST_USER_ID, type: "private" },
+      from: { id: TEST_USER_ID },
     },
   });
 
@@ -49,6 +51,7 @@ test("When /sessions is requested in DM, then relay shows create and open action
   assert.match(sent.text, /Agent sessions/);
   assert.ok(buttons.some((button) => button.callback_data === "session:create:headless-1"));
   assert.ok(buttons.some((button) => button.url === "https://t.me/c/1001/4"));
+  assert.ok(buttons.some((button) => button.callback_data === "dm:new"));
 });
 
 test("When /start is requested in DM, then relay shows the home buttons", async () => {
@@ -60,8 +63,8 @@ test("When /start is requested in DM, then relay shows the home buttons", async 
   await app.handleUpdate({
     message: {
       text: "/start",
-      chat: { id: 344735105, type: "private" },
-      from: { id: 344735105 },
+      chat: { id: TEST_USER_ID, type: "private" },
+      from: { id: TEST_USER_ID },
     },
   });
 
@@ -72,6 +75,150 @@ test("When /start is requested in DM, then relay shows the home buttons", async 
   assert.ok(buttons.some((button) => button.callback_data === "dm:sessions"));
   assert.ok(buttons.some((button) => button.callback_data === "dm:status"));
   assert.ok(buttons.some((button) => button.callback_data === "dm:help"));
+  assert.ok(buttons.some((button) => button.callback_data === "dm:chatid"));
+});
+
+test("When the chat id button is tapped in DM, then relay shows the user id as an alert", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const app = createTestApp({ store, telegram });
+
+  await app.initialize();
+  await app.handleUpdate({
+    callback_query: {
+      id: "cb-chatid",
+      data: "dm:chatid",
+      from: { id: TEST_USER_ID },
+      message: {
+        message_id: 7,
+        chat: { id: TEST_USER_ID, type: "private" },
+      },
+    },
+  });
+
+  const answer = telegram.calls.answerCallbackQuery.at(-1);
+
+  assert.equal(answer.options.text, `user_id: ${TEST_USER_ID}`);
+  assert.equal(answer.options.show_alert, true);
+});
+
+test("When starting a new session from DM, then relay lets the user browse folders and bind a fresh topic", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-root-"));
+  const repoDir = path.join(rootDir, "sawmills-agent");
+  await fs.mkdir(repoDir);
+  const realRepoDir = await fs.realpath(repoDir);
+
+  const app = createRelayApp({
+    botConfig: {
+      authorizedUserIds: new Set([String(TEST_USER_ID)]),
+      forumChatId: "-1001",
+      pollTimeoutSeconds: 1,
+      hostId: "mbp",
+    },
+    codexConfig: {
+      defaultCwd: rootDir,
+      startRoots: [rootDir],
+      model: "",
+      defaultArgs: ["--yolo"],
+    },
+    telegram,
+    store,
+    runTurn: async () => {
+      throw new Error("should not run during setup");
+    },
+    now: () => "2026-04-02T12:00:00.000Z",
+    logger: {
+      log() {},
+      error() {},
+    },
+    sleep: async () => {},
+  });
+
+  await app.initialize();
+  await app.handleUpdate({
+    callback_query: {
+      id: "cb-new",
+      data: "dm:new",
+      from: { id: TEST_USER_ID },
+      message: {
+        message_id: 3,
+        chat: { id: TEST_USER_ID, type: "private" },
+      },
+    },
+  });
+
+  const hostPanel = telegram.calls.editMessage.at(-1);
+  const hostButton = hostPanel.options.reply_markup.inline_keyboard[0][0];
+
+  await app.handleUpdate({
+    callback_query: {
+      id: "cb-host",
+      data: hostButton.callback_data,
+      from: { id: TEST_USER_ID },
+      message: {
+        message_id: 3,
+        chat: { id: TEST_USER_ID, type: "private" },
+      },
+    },
+  });
+
+  const rootPanel = telegram.calls.editMessage.at(-1);
+  const rootButton = rootPanel.options.reply_markup.inline_keyboard[0][0];
+
+  await app.handleUpdate({
+    callback_query: {
+      id: "cb-root",
+      data: rootButton.callback_data,
+      from: { id: TEST_USER_ID },
+      message: {
+        message_id: 3,
+        chat: { id: TEST_USER_ID, type: "private" },
+      },
+    },
+  });
+
+  const directoryPanel = telegram.calls.editMessage.at(-1);
+  const subdirButton = directoryPanel.options.reply_markup.inline_keyboard[0][0];
+
+  await app.handleUpdate({
+    callback_query: {
+      id: "cb-subdir",
+      data: subdirButton.callback_data,
+      from: { id: TEST_USER_ID },
+      message: {
+        message_id: 3,
+        chat: { id: TEST_USER_ID, type: "private" },
+      },
+    },
+  });
+
+  const selectedPanel = telegram.calls.editMessage.at(-1);
+  const useButton = selectedPanel.options.reply_markup.inline_keyboard.find((row) =>
+    row.some((button) => button.text === "Use This Folder"),
+  )[0];
+
+  await app.handleUpdate({
+    callback_query: {
+      id: "cb-use",
+      data: useButton.callback_data,
+      from: { id: TEST_USER_ID },
+      message: {
+        message_id: 3,
+        chat: { id: TEST_USER_ID, type: "private" },
+      },
+    },
+  });
+
+  const sessions = await store.listSessions();
+  const session = sessions.find((item) => item.cwd === realRepoDir);
+
+  assert.ok(session);
+  assert.equal(session?.createdVia, "telegram-ui");
+  assert.equal(session?.threadId, "");
+  assert.equal(session?.status, "bound");
+  assert.equal(session?.topicId, 42);
 });
 
 test("When create-topic is tapped, then relay binds the session and refreshes the DM view", async () => {
@@ -94,10 +241,10 @@ test("When create-topic is tapped, then relay binds the session and refreshes th
     callback_query: {
       id: "cb-1",
       data: "session:create:session-1",
-      from: { id: 344735105 },
+      from: { id: TEST_USER_ID },
       message: {
         message_id: 9,
-        chat: { id: 344735105, type: "private" },
+        chat: { id: TEST_USER_ID, type: "private" },
       },
     },
   });
@@ -138,7 +285,7 @@ test("When a topic keyboard latest button is tapped, then relay resends the late
     callback_query: {
       id: "cb-topic-latest",
       data: "topic:latest:session-topic-1",
-      from: { id: 344735105 },
+      from: { id: TEST_USER_ID },
       message: {
         message_id: 15,
         message_thread_id: 15,
@@ -198,7 +345,7 @@ test("When a topic message continues a bound session, then relay streams progres
     message: {
       text: "continue from telegram",
       chat: { id: -1001, type: "supergroup" },
-      from: { id: 344735105 },
+      from: { id: TEST_USER_ID },
       message_thread_id: 8,
     },
   });
@@ -270,7 +417,7 @@ test("When a second topic prompt arrives while Codex is still running, then it i
     message: {
       text: "first prompt",
       chat: { id: -1001, type: "supergroup" },
-      from: { id: 344735105 },
+      from: { id: TEST_USER_ID },
       message_thread_id: 18,
     },
   });
@@ -278,7 +425,7 @@ test("When a second topic prompt arrives while Codex is still running, then it i
     message: {
       text: "second prompt",
       chat: { id: -1001, type: "supergroup" },
-      from: { id: 344735105 },
+      from: { id: TEST_USER_ID },
       message_thread_id: 18,
     },
   });
@@ -332,7 +479,7 @@ test("When a topic message targets a remote host session, then relay queues the 
     message: {
       text: "continue remotely",
       chat: { id: -1001, type: "supergroup" },
-      from: { id: 344735105 },
+      from: { id: TEST_USER_ID },
       message_thread_id: 11,
     },
   });
@@ -352,14 +499,16 @@ async function createTempStore() {
 function createTestApp({ store, telegram, runTurn, clock, hubServer = null }) {
   return createRelayApp({
     botConfig: {
-      authorizedUserIds: new Set(["344735105"]),
+      authorizedUserIds: new Set([String(TEST_USER_ID)]),
       forumChatId: "-1001",
       pollTimeoutSeconds: 1,
       hostId: "mbp",
     },
     codexConfig: {
       defaultCwd: "/repo",
+      startRoots: ["/repo"],
       model: "",
+      defaultArgs: ["--yolo"],
     },
     telegram,
     store,

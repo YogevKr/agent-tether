@@ -13,6 +13,7 @@ const telegram = new TelegramClient({
 const store = new StateStore(botConfig.stateFile);
 const hubServer = createHubServer({
   botConfig,
+  codexConfig,
   store,
   telegram,
 });

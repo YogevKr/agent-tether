@@ -9,9 +9,10 @@ export function dmHelpText({ userId, forumTitle }) {
     "",
     "Use the buttons below.",
     "",
+    "New Session creates a fresh topic from Telegram.",
     "Sessions shows indexed local agent sessions.",
     "Status shows forum and session counts.",
-    "chatid still works if you need your Telegram user id.",
+    "Chat ID shows your Telegram user id.",
   ].join("\n");
 }
 
@@ -57,9 +58,8 @@ export function formatSessionsPanel({ forumTitle, sessions, limit = MAX_PANEL_SE
   if (visibleSessions.length === 0) {
     lines.push("No open sessions.");
     lines.push("");
-    lines.push("Run Codex locally. Indexed sessions appear here after the next hook event.");
-    lines.push("Fallback launcher:");
-    lines.push('npm run start-session -- --label "task" --prompt "..."');
+    lines.push("Use New Session to start one from Telegram.");
+    lines.push("Or run Codex locally and it will appear here after the next hook event.");
     return lines.join("\n");
   }
 
@@ -113,6 +113,13 @@ export function buildSessionsKeyboard(sessions) {
 
   inline_keyboard.push([
     {
+      text: "New Session",
+      callback_data: "dm:new",
+    },
+  ]);
+
+  inline_keyboard.push([
+    {
       text: "Refresh",
       callback_data: "sessions:refresh",
     },
@@ -153,8 +160,19 @@ export function buildSessionDetailKeyboard(session) {
 
   inline_keyboard.push([
     {
+      text: "New Session",
+      callback_data: "dm:new",
+    },
+    {
       text: "Back to Sessions",
       callback_data: "sessions:refresh",
+    },
+  ]);
+
+  inline_keyboard.push([
+    {
+      text: "Home",
+      callback_data: "dm:help",
     },
   ]);
 
@@ -166,6 +184,12 @@ export function buildDmHomeKeyboard() {
     inline_keyboard: [
       [
         {
+          text: "New Session",
+          callback_data: "dm:new",
+        },
+      ],
+      [
+        {
           text: "Sessions",
           callback_data: "dm:sessions",
         },
@@ -175,6 +199,10 @@ export function buildDmHomeKeyboard() {
         },
       ],
       [
+        {
+          text: "Chat ID",
+          callback_data: "dm:chatid",
+        },
         {
           text: "Help",
           callback_data: "dm:help",
@@ -228,7 +256,9 @@ export function formatTopicBootstrap(session, topicLink) {
     `cwd: ${session.cwd}`,
     "",
     "Plain text in this topic continues the bound Codex session.",
-    `Back on computer: codex resume ${session.threadId}`,
+    session.threadId
+      ? `Back on computer: codex resume ${session.threadId}`
+      : "Send the first prompt here to start the session.",
     "Buttons below handle status, latest reply, and detach.",
     "",
     `Topic link: ${topicLink}`,
@@ -248,9 +278,13 @@ export function formatSessionDetails(session) {
   return [
     `Session: ${session.label}`,
     `id: ${shortSessionId(session.id)}`,
-    `codex_session_id: ${session.threadId}`,
+    `codex_session_id: ${session.threadId || "(starts on first prompt)"}`,
     `host: ${session.hostId || "local"}`,
-    `resume_local: cd ${session.cwd} && codex resume ${session.threadId}`,
+    `resume_local: ${
+      session.threadId
+        ? `cd ${session.cwd} && codex resume ${session.threadId}`
+        : "send the first prompt in Telegram to start it"
+    }`,
     `state: ${session.status}`,
     `origin: ${session.createdVia}`,
     `cwd: ${session.cwd}`,

@@ -122,7 +122,9 @@ export function buildCodexArgs({
   model,
   outputFile,
 }) {
-  const args = threadId ? ["exec", "resume"] : ["exec"];
+  const defaultArgs = codex.defaultArgs || [];
+  const hasYolo = defaultArgs.includes("--yolo");
+  const args = [...defaultArgs, ...(threadId ? ["exec", "resume"] : ["exec"])];
 
   args.push("--json", "-o", outputFile);
 
@@ -134,11 +136,11 @@ export function buildCodexArgs({
     args.push("-m", model || codex.model);
   }
 
-  if (codex.approvalPolicy) {
+  if (!hasYolo && codex.approvalPolicy) {
     args.push("-c", `approval_policy="${codex.approvalPolicy}"`);
   }
 
-  if (codex.sandboxMode) {
+  if (!hasYolo && codex.sandboxMode) {
     args.push("-c", `sandbox_mode="${codex.sandboxMode}"`);
   }
 

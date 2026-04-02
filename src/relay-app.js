@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { runCodexTurn } from "./codex.js";
 import {
   MAX_PANEL_SESSIONS,
@@ -35,6 +38,7 @@ export function createRelayApp({
 }) {
   const sessionQueues = new Map();
   const sessionQueueDepths = new Map();
+  const uiTokens = new Map();
 
   let offset = 0;
   let botUsername = "";
@@ -44,6 +48,13 @@ export function createRelayApp({
     const me = await telegram.getMe();
     botUsername = me.username?.toLowerCase() || "";
     forumChat = await telegram.getChat(botConfig.forumChatId);
+
+    await store.upsertHost(botConfig.hostId, {
+      label: botConfig.hostId,
+      defaultCwd: codexConfig.defaultCwd,
+      roots: codexConfig.startRoots,
+      lastSeenAt: now(),
+    });
 
     if (!forumChat.is_forum) {
       throw new Error(
@@ -146,6 +157,11 @@ export function createRelayApp({
 
     if (isCommand(text, "sessions", botUsername)) {
       await renderSessionsPanel(chatId);
+      return;
+    }
+
+    if (isCommand(text, "new", botUsername)) {
+      await renderHostPicker(chatId);
       return;
     }
 
@@ -299,10 +315,26 @@ export function createRelayApp({
     const topicId = query.message.message_thread_id;
 
     if (query.message.chat.type === "private") {
+      if (query.data === "dm:new") {
+        await renderHostPicker(chatId, messageId);
+        await telegram.answerCallbackQuery(query.id, {
+          text: "Choose a node.",
+        });
+        return;
+      }
+
       if (query.data === "dm:help") {
         await renderDmHome(chatId, messageId);
         await telegram.answerCallbackQuery(query.id, {
           text: "Help loaded.",
+        });
+        return;
+      }
+
+      if (query.data === "dm:chatid") {
+        await telegram.answerCallbackQuery(query.id, {
+          text: `user_id: ${userId}`,
+          show_alert: true,
         });
         return;
       }
@@ -320,6 +352,73 @@ export function createRelayApp({
         await telegram.answerCallbackQuery(query.id, {
           text: "Sessions loaded.",
         });
+        return;
+      }
+
+      if (query.data.startsWith("new:host:")) {
+        const hostId = query.data.slice("new:host:".length);
+        await renderRootPicker(chatId, messageId, hostId);
+        await telegram.answerCallbackQuery(query.id, {
+          text: "Choose a starting place.",
+        });
+        return;
+      }
+
+      if (query.data.startsWith("new:roots:")) {
+        const hostId = query.data.slice("new:roots:".length);
+        await renderRootPicker(chatId, messageId, hostId);
+        await telegram.answerCallbackQuery(query.id, {
+          text: "Choose a starting place.",
+        });
+        return;
+      }
+
+      if (query.data.startsWith("new:browse:")) {
+        const token = query.data.slice("new:browse:".length);
+        const context = uiTokens.get(token);
+
+        if (!context) {
+          await telegram.answerCallbackQuery(query.id, {
+            text: "Directory view expired. Start again.",
+            show_alert: true,
+          });
+          return;
+        }
+
+        try {
+          await renderDirectoryPicker(chatId, messageId, context);
+          await telegram.answerCallbackQuery(query.id, {
+            text: "Directory loaded.",
+          });
+        } catch (error) {
+          await telegram.answerCallbackQuery(query.id, {
+            text: error.message,
+            show_alert: true,
+          });
+        }
+        return;
+      }
+
+      if (query.data.startsWith("new:use:")) {
+        const token = query.data.slice("new:use:".length);
+        const context = uiTokens.get(token);
+
+        if (!context) {
+          await telegram.answerCallbackQuery(query.id, {
+            text: "Directory selection expired. Start again.",
+            show_alert: true,
+          });
+          return;
+        }
+
+        try {
+          await createSessionFromDirectory(chatId, messageId, query.id, context);
+        } catch (error) {
+          await telegram.answerCallbackQuery(query.id, {
+            text: error.message,
+            show_alert: true,
+          });
+        }
         return;
       }
     }
@@ -494,6 +593,198 @@ export function createRelayApp({
     );
   }
 
+  async function renderHostPicker(chatId, messageId = null) {
+    const hosts = (await store.listHosts()).filter((host) => host.roots.length > 0);
+
+    const text = hosts.length === 0
+      ? [
+          "New session",
+          "",
+          "No nodes are available yet.",
+          "Wait for the hub or a worker to heartbeat, then try again.",
+        ].join("\n")
+      : [
+          "New session",
+          "",
+          "Choose where to start the new agent session.",
+        ].join("\n");
+
+    const replyMarkup = hosts.length === 0
+      ? buildDmHomeKeyboard()
+      : {
+          inline_keyboard: [
+            ...hosts.map((host) => [{
+              text: formatHostButtonLabel(host),
+              callback_data: `new:host:${host.id}`,
+            }]),
+            [
+              {
+                text: "Back",
+                callback_data: "dm:help",
+              },
+            ],
+          ],
+        };
+
+    return editOrSend(chatId, messageId, text, {
+      reply_markup: replyMarkup,
+    });
+  }
+
+  async function renderRootPicker(chatId, messageId, hostId) {
+    const host = await store.getHost(hostId);
+
+    if (!host) {
+      return editOrSend(chatId, messageId, "Node not found. Start again from New Session.", {
+        reply_markup: buildDmHomeKeyboard(),
+      });
+    }
+
+    const rows = host.roots.map((rootPath) => {
+      const token = issueUiToken({
+        hostId,
+        rootPath,
+        path: rootPath,
+        page: 0,
+      });
+
+      return [{
+        text: displayPath(rootPath),
+        callback_data: `new:browse:${token}`,
+      }];
+    });
+
+    rows.push([
+      {
+        text: "Back",
+        callback_data: "dm:new",
+      },
+    ]);
+
+    return editOrSend(
+      chatId,
+      messageId,
+      [
+        "New session",
+        "",
+        `node: ${host.label}`,
+        "Choose a starting place.",
+      ].join("\n"),
+      {
+        reply_markup: {
+          inline_keyboard: rows,
+        },
+      },
+    );
+  }
+
+  async function renderDirectoryPicker(chatId, messageId, context) {
+    const entries = await listBrowsableDirectories(context.hostId, context.rootPath, context.path);
+    const pageSize = 10;
+    const maxPage = Math.max(Math.ceil(entries.length / pageSize) - 1, 0);
+    const page = Math.max(0, Math.min(context.page || 0, maxPage));
+    const pageEntries = entries.slice(page * pageSize, (page + 1) * pageSize);
+    const host = await store.getHost(context.hostId);
+    const rows = pageEntries.map((entry) => {
+      const token = issueUiToken({
+        hostId: context.hostId,
+        rootPath: context.rootPath,
+        path: entry.path,
+        page: 0,
+      });
+
+      return [{
+        text: entry.name,
+        callback_data: `new:browse:${token}`,
+      }];
+    });
+
+    rows.push([
+      {
+        text: "Use This Folder",
+        callback_data: `new:use:${issueUiToken({
+          hostId: context.hostId,
+          rootPath: context.rootPath,
+          path: context.path,
+          page,
+        })}`,
+      },
+    ]);
+
+    const navRow = [];
+
+    if (context.path !== context.rootPath) {
+      navRow.push({
+        text: "Up",
+        callback_data: `new:browse:${issueUiToken({
+          hostId: context.hostId,
+          rootPath: context.rootPath,
+          path: path.dirname(context.path),
+          page: 0,
+        })}`,
+      });
+    }
+
+    if (page > 0) {
+      navRow.push({
+        text: "Prev",
+        callback_data: `new:browse:${issueUiToken({
+          hostId: context.hostId,
+          rootPath: context.rootPath,
+          path: context.path,
+          page: page - 1,
+        })}`,
+      });
+    }
+
+    if (page < maxPage) {
+      navRow.push({
+        text: "Next",
+        callback_data: `new:browse:${issueUiToken({
+          hostId: context.hostId,
+          rootPath: context.rootPath,
+          path: context.path,
+          page: page + 1,
+        })}`,
+      });
+    }
+
+    if (navRow.length > 0) {
+      rows.push(navRow);
+    }
+
+    rows.push([
+      {
+        text: "Places",
+        callback_data: `new:roots:${context.hostId}`,
+      },
+      {
+        text: "Nodes",
+        callback_data: "dm:new",
+      },
+    ]);
+
+    const lines = [
+      "New session",
+      "",
+      `node: ${host?.label || context.hostId}`,
+      `root: ${displayPath(context.rootPath)}`,
+      `folder: ${displayPath(context.path)}`,
+    ];
+
+    if (entries.length === 0) {
+      lines.push("", "No subdirectories here. Use This Folder to start here.");
+    } else if (maxPage > 0) {
+      lines.push("", `subdirs: ${entries.length} total, page ${page + 1}/${maxPage + 1}`);
+    }
+
+    return editOrSend(chatId, messageId, lines.join("\n"), {
+      reply_markup: {
+        inline_keyboard: rows,
+      },
+    });
+  }
+
   async function renderDmStatus(chatId, messageId = null) {
     const sessions = await store.listSessions();
     return editOrSend(
@@ -544,6 +835,49 @@ export function createRelayApp({
       return;
     }
 
+    await createTopicForNewSession(session);
+    await renderSessionDetails(controlChatId, panelMessageId, session.id);
+    await telegram.answerCallbackQuery(callbackQueryId, {
+      text: "Topic created. Open Topic.",
+    });
+  }
+
+  async function createSessionFromDirectory(chatId, messageId, callbackQueryId, context) {
+    const host = await store.getHost(context.hostId);
+
+    if (!host) {
+      await telegram.answerCallbackQuery(callbackQueryId, {
+        text: "Node not found. Start again.",
+        show_alert: true,
+      });
+      return;
+    }
+
+    const sessionId = randomUUID();
+    const session = await store.saveSession({
+      id: sessionId,
+      label: path.basename(context.path) || context.path,
+      threadId: "",
+      cwd: context.path,
+      model: codexConfig.model,
+      latestAssistantMessage: "",
+      latestUserPrompt: "",
+      createdVia: "telegram-ui",
+      createdAt: now(),
+      updatedAt: now(),
+      status: "headless",
+      hostId: context.hostId,
+    });
+
+    const boundSession = await createTopicForNewSession(session);
+
+    await renderSessionDetails(chatId, messageId, boundSession.id);
+    await telegram.answerCallbackQuery(callbackQueryId, {
+      text: "Topic created. Send the first prompt there.",
+    });
+  }
+
+  async function createTopicForNewSession(session) {
     const topic = await telegram.createForumTopic(
       forumChat.id,
       toTopicName(session.label),
@@ -559,18 +893,13 @@ export function createRelayApp({
       },
     );
 
-    await store.bindSession(session.id, {
+    return store.bindSession(session.id, {
       forumChatId: forumChat.id,
       topicId: topic.message_thread_id,
       topicName: topic.name || session.label,
       topicLink,
       bootstrapMessageId: bootstrapMessages[0]?.message_id || null,
       updatedAt: now(),
-    });
-
-    await renderSessionDetails(controlChatId, panelMessageId, session.id);
-    await telegram.answerCallbackQuery(callbackQueryId, {
-      text: "Topic created. Open Topic.",
     });
   }
 
@@ -768,6 +1097,27 @@ export function createRelayApp({
         throw error;
       }
     }
+  }
+
+  async function listBrowsableDirectories(hostId, rootPath, directoryPath) {
+    if (hostId === botConfig.hostId) {
+      return listLocalDirectories(directoryPath, rootPath, codexConfig.startRoots);
+    }
+
+    if (!hubServer) {
+      throw new Error("Remote directory browsing is not available in single-host mode.");
+    }
+
+    return hubServer.requestDirectoryBrowse(hostId, {
+      directoryPath,
+      rootPath,
+    });
+  }
+
+  function issueUiToken(payload) {
+    const token = randomUUID().slice(0, 12);
+    uiTokens.set(token, payload);
+    return token;
   }
 
   async function countPendingTurns(session) {
@@ -993,4 +1343,59 @@ function assertAuthorizedUser(userId, authorizedUserIds) {
 
 function defaultSleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function listLocalDirectories(directoryPath, rootPath, allowedRoots) {
+  const target = await fs.realpath(directoryPath);
+  const root = await fs.realpath(rootPath);
+  const normalizedRoots = await Promise.all(
+    allowedRoots.map((candidate) => fs.realpath(candidate).catch(() => null)),
+  );
+
+  if (!normalizedRoots.filter(Boolean).some((candidate) => isInsideRoot(root, candidate))) {
+    throw new Error(`Root is not allowed: ${rootPath}`);
+  }
+
+  if (!isInsideRoot(target, root)) {
+    throw new Error(`Path is outside the selected root: ${directoryPath}`);
+  }
+
+  const entries = await fs.readdir(target, { withFileTypes: true });
+
+  return entries
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .map((entry) => ({
+      name: entry.name,
+      path: path.join(target, entry.name),
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+}
+
+function isInsideRoot(targetPath, rootPath) {
+  return targetPath === rootPath || targetPath.startsWith(`${rootPath}${path.sep}`);
+}
+
+function formatHostButtonLabel(host) {
+  const primary = host.label || host.id;
+  const roots = host.roots.length > 0 ? displayPath(host.roots[0]) : "no roots";
+  return `${truncateButtonText(primary, 16)} • ${truncateButtonText(roots, 18)}`;
+}
+
+function displayPath(value) {
+  const home = process.env.HOME || "";
+  const normalized = String(value || "");
+
+  if (home && normalized.startsWith(home)) {
+    return `~${normalized.slice(home.length)}`;
+  }
+
+  return normalized;
+}
+
+function truncateButtonText(value, maxLength) {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, maxLength - 3)}...`;
 }

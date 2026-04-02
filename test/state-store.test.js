@@ -5,6 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import { StateStore } from "../src/state-store.js";
 
+const TEST_REPOS_ROOT = "/workspace/repos";
+const TEST_PROJECTS_ROOT = "/workspace/projects";
+
 test("When binding a session to a topic, then it becomes retrievable by forum topic", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-store-"));
   const store = new StateStore(path.join(tempDir, "state.json"));
@@ -139,4 +142,26 @@ test("When pulling queued jobs, then busy sessions are skipped until they become
   assert.equal(claimed?.status, "running");
   assert.equal(session?.isBusy, true);
   assert.equal(session?.activeRunSource, "telegram");
+});
+
+test("When hosts heartbeat, then the newest hosts are listed with their browse roots", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-store-"));
+  const store = new StateStore(path.join(tempDir, "state.json"));
+
+  await store.upsertHost("mbp", {
+    label: "MacBook",
+    roots: [TEST_REPOS_ROOT, TEST_PROJECTS_ROOT],
+    lastSeenAt: "2026-04-02T10:00:00.000Z",
+  });
+  await store.upsertHost("mini", {
+    label: "Mac mini",
+    roots: [TEST_REPOS_ROOT],
+    lastSeenAt: "2026-04-02T11:00:00.000Z",
+  });
+
+  const hosts = await store.listHosts();
+
+  assert.equal(hosts[0]?.id, "mini");
+  assert.deepEqual(hosts[0]?.roots, [TEST_REPOS_ROOT]);
+  assert.equal(hosts[1]?.id, "mbp");
 });

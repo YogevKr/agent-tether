@@ -5,6 +5,7 @@ const EMPTY_STATE = {
   sessions: {},
   topicBindings: {},
   jobs: {},
+  hosts: {},
 };
 
 export class StateStore {
@@ -148,6 +149,30 @@ export class StateStore {
     return state.sessions[sessionId] || null;
   }
 
+  async listHosts() {
+    const state = await this.read();
+    return Object.values(state.hosts).sort(compareHosts);
+  }
+
+  async getHost(hostId) {
+    const state = await this.read();
+    return state.hosts[String(hostId)] || null;
+  }
+
+  async upsertHost(hostId, updates) {
+    const state = await this.read();
+    const existing = state.hosts[String(hostId)] || {};
+    const next = normalizeHost({
+      ...existing,
+      ...updates,
+      id: hostId,
+    });
+
+    state.hosts[next.id] = next;
+    await this.write(state);
+    return next;
+  }
+
   async listJobsForSession(sessionId, { statuses = [] } = {}) {
     const state = await this.read();
     const allowedStatuses = new Set(statuses.map((status) => String(status)));
@@ -205,6 +230,10 @@ export class StateStore {
       .filter((job) => job.hostId === String(hostId) && job.status === "queued")
       .sort(compareJobs)
       .find((job) => {
+        if (job.kind !== "run-turn") {
+          return true;
+        }
+
         const session = state.sessions[job.sessionId];
         return session && !session.isBusy;
       });
@@ -221,12 +250,14 @@ export class StateStore {
     });
 
     state.jobs[claimed.id] = claimed;
-    state.sessions[claimed.sessionId] = normalizeSession({
-      ...state.sessions[claimed.sessionId],
-      isBusy: true,
-      activeRunSource: "telegram",
-      updatedAt: now,
-    });
+    if (claimed.kind === "run-turn" && state.sessions[claimed.sessionId]) {
+      state.sessions[claimed.sessionId] = normalizeSession({
+        ...state.sessions[claimed.sessionId],
+        isBusy: true,
+        activeRunSource: "telegram",
+        updatedAt: now,
+      });
+    }
     await this.write(state);
     return claimed;
   }
@@ -247,6 +278,7 @@ function cloneEmptyState() {
     sessions: {},
     topicBindings: {},
     jobs: {},
+    hosts: {},
   };
 }
 
@@ -264,6 +296,13 @@ function normalizeState(state) {
     normalized.jobs[jobId] = normalizeJob({
       id: jobId,
       ...job,
+    });
+  }
+
+  for (const [hostId, host] of Object.entries(state.hosts || {})) {
+    normalized.hosts[hostId] = normalizeHost({
+      id: hostId,
+      ...host,
     });
   }
 
@@ -312,9 +351,18 @@ function normalizeSession(session) {
 function normalizeJob(job) {
   return {
     id: String(job.id),
+    kind: normalizeJobKind(job.kind),
     sessionId: String(job.sessionId || ""),
     hostId: String(job.hostId || ""),
     prompt: String(job.prompt || ""),
+    browsePath: String(job.browsePath || ""),
+    rootPath: String(job.rootPath || ""),
+    entries: Array.isArray(job.entries)
+      ? job.entries.map((entry) => ({
+          name: String(entry.name || ""),
+          path: String(entry.path || ""),
+        }))
+      : [],
     status: normalizeJobStatus(job.status),
     chatId: String(job.chatId || ""),
     messageThreadId:
@@ -334,6 +382,18 @@ function normalizeJob(job) {
     completedAt: String(job.completedAt || ""),
     finalMessage: String(job.finalMessage || ""),
     error: String(job.error || ""),
+  };
+}
+
+function normalizeHost(host) {
+  return {
+    id: String(host.id || ""),
+    label: String(host.label || host.id || ""),
+    defaultCwd: String(host.defaultCwd || ""),
+    roots: Array.isArray(host.roots)
+      ? host.roots.map((root) => String(root)).filter(Boolean)
+      : [],
+    lastSeenAt: String(host.lastSeenAt || new Date().toISOString()),
   };
 }
 
@@ -364,10 +424,24 @@ function normalizeJobStatus(status) {
   return "queued";
 }
 
+function normalizeJobKind(kind) {
+  if (kind === "browse-dir") {
+    return kind;
+  }
+
+  return "run-turn";
+}
+
 function compareJobs(left, right) {
   const leftTime = Date.parse(left.createdAt || 0);
   const rightTime = Date.parse(right.createdAt || 0);
   return leftTime - rightTime;
+}
+
+function compareHosts(left, right) {
+  const leftTime = Date.parse(left.lastSeenAt || 0);
+  const rightTime = Date.parse(right.lastSeenAt || 0);
+  return rightTime - leftTime || left.label.localeCompare(right.label);
 }
 
 function syncBindingsForSession(state, session) {

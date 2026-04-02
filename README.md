@@ -9,6 +9,7 @@ Run coding agents on your machine as usual. Global Codex hooks index sessions lo
 - A Telegram forum topic is the work surface for one Codex session.
 - Sessions stay headless until you bind one from `/sessions`.
 - Sessions are owned by one `host_id`, so one bot can route work to multiple computers.
+- Telegram can also create a fresh session: choose node, choose place, browse directories, open topic, send first prompt.
 
 ## Requirements
 
@@ -33,6 +34,7 @@ Run coding agents on your machine as usual. Global Codex hooks index sessions lo
    - `AUTHORIZED_TELEGRAM_USER_IDS`
    - `TELEGRAM_FORUM_CHAT_ID`
    - `CODEX_DEFAULT_CWD`
+   - `RELAY_START_ROOTS`
    - `RELAY_HOST_ID`
 
 3. For multi-host mode:
@@ -146,9 +148,15 @@ After the next hook event, that session appears in Telegram `/sessions` with its
 ## Telegram UX
 
 - DM is button-first: `Sessions`, `Status`, `Help`
+- DM also supports `New Session`: choose node, choose place, browse subdirectories, then open a fresh topic
 - Topic messages are still plain text prompts
 - Topic control messages include buttons for `Status`, `Latest`, and `Detach`
 - Slash commands still work, but the normal flow should not require typing them
+
+## Codex defaults
+
+- `CODEX_DEFAULT_ARGS` defaults to `--yolo`
+- If you keep `--yolo`, Agent Tether will not also add explicit approval/sandbox config flags on top
 
 Optional fallback: start a headless non-interactive Codex session from the computer:
 

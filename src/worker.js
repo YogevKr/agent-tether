@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { getCodexConfig } from "./config.js";
 import { runCodexTurn } from "./codex.js";
 
@@ -14,6 +16,9 @@ async function main() {
     try {
       const pulled = await postJson(`${codexConfig.hubUrl}/api/jobs/pull`, {
         hostId: codexConfig.hostId,
+        label: codexConfig.hostId,
+        defaultCwd: codexConfig.defaultCwd,
+        roots: codexConfig.startRoots,
       });
 
       if (!pulled?.job || !pulled?.session) {
@@ -31,6 +36,14 @@ async function main() {
 
 async function executeJob(job, session) {
   try {
+    if (job.kind === "browse-dir") {
+      const entries = await listDirectories(job.browsePath, job.rootPath, codexConfig.startRoots);
+      await postJson(`${codexConfig.hubUrl}/api/jobs/${job.id}/complete`, {
+        entries,
+      });
+      return;
+    }
+
     await postJson(`${codexConfig.hubUrl}/api/jobs/${job.id}/progress`, {
       update: {
         type: "status",
@@ -81,6 +94,36 @@ async function postJson(url, payload) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function listDirectories(directoryPath, rootPath, allowedRoots) {
+  const target = await fs.realpath(directoryPath);
+  const root = await fs.realpath(rootPath);
+  const normalizedRoots = await Promise.all(
+    allowedRoots.map((candidate) => fs.realpath(candidate).catch(() => null)),
+  );
+
+  if (!normalizedRoots.filter(Boolean).some((candidate) => isInsideRoot(root, candidate))) {
+    throw new Error(`Root is not allowed: ${rootPath}`);
+  }
+
+  if (!isInsideRoot(target, root)) {
+    throw new Error(`Path is outside the selected root: ${directoryPath}`);
+  }
+
+  const entries = await fs.readdir(target, { withFileTypes: true });
+
+  return entries
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .map((entry) => ({
+      name: entry.name,
+      path: path.join(target, entry.name),
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+}
+
+function isInsideRoot(targetPath, rootPath) {
+  return targetPath === rootPath || targetPath.startsWith(`${rootPath}${path.sep}`);
 }
 
 await main();

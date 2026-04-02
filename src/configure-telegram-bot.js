@@ -21,6 +21,10 @@ const PRIVATE_COMMANDS = [
     description: "List indexed local agent sessions",
   },
   {
+    command: "new",
+    description: "Create a new session from Telegram",
+  },
+  {
     command: "status",
     description: "Show forum and session counts",
   },

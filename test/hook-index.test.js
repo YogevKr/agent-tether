@@ -6,6 +6,8 @@ import path from "node:path";
 import { applyHookEvent, stopHookResponse } from "../src/hook-index.js";
 import { StateStore } from "../src/state-store.js";
 
+const TEST_WORKSPACE = "/workspace/agent-tether";
+
 test("When SessionStart fires, then the local Codex session is indexed as headless", async () => {
   const store = await createTempStore();
 
@@ -14,7 +16,7 @@ test("When SessionStart fires, then the local Codex session is indexed as headle
     {
       hook_event_name: "SessionStart",
       session_id: "session-1",
-      cwd: "/Users/yogev/projects/agent-tether",
+      cwd: TEST_WORKSPACE,
       model: "gpt-5.4",
       source: "startup",
       host_id: "mbp",

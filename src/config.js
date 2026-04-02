@@ -26,6 +26,7 @@ export function getBotConfig() {
       30,
     ),
     hostId: process.env.RELAY_HOST_ID || os.hostname(),
+    startRoots: getStartRoots(),
     hubToken: process.env.RELAY_HUB_TOKEN || "",
     hubBindHost: process.env.RELAY_HUB_BIND_HOST || "127.0.0.1",
     hubPort: parsePositiveInt(process.env.RELAY_HUB_PORT, 8787),
@@ -42,11 +43,13 @@ export function getCodexConfig() {
     model: process.env.CODEX_MODEL || "",
     approvalPolicy: process.env.CODEX_APPROVAL_POLICY || "never",
     sandboxMode: process.env.CODEX_SANDBOX_MODE || "workspace-write",
+    defaultArgs: parseCommandArgs(process.env.CODEX_DEFAULT_ARGS || "--yolo"),
     skipGitRepoCheck: parseBoolean(
       process.env.CODEX_SKIP_GIT_REPO_CHECK,
       true,
     ),
     hostId: process.env.RELAY_HOST_ID || os.hostname(),
+    startRoots: getStartRoots(),
     hubUrl: process.env.RELAY_HUB_URL || "",
     hubToken: process.env.RELAY_HUB_TOKEN || "",
   };
@@ -94,6 +97,10 @@ function parseCsv(value) {
 }
 
 function resolveProjectPath(filePath) {
+  if (String(filePath).startsWith("~/")) {
+    return path.join(os.homedir(), filePath.slice(2));
+  }
+
   if (path.isAbsolute(filePath)) {
     return filePath;
   }
@@ -135,4 +142,35 @@ function parsePositiveInt(value, fallback) {
   }
 
   return parsed;
+}
+
+function getStartRoots() {
+  const configured = parseCsv(process.env.RELAY_START_ROOTS || "");
+  const fallback = [
+    "~/repos",
+    "~/projects",
+    process.env.CODEX_DEFAULT_CWD || process.cwd(),
+  ];
+
+  const candidates = (configured.size > 0 ? [...configured] : fallback)
+    .map((item) => resolveProjectPath(item))
+    .filter((item, index, items) => item && items.indexOf(item) === index);
+
+  return candidates.filter((candidate) => {
+    try {
+      return fs.existsSync(candidate) && fs.statSync(candidate).isDirectory();
+    } catch {
+      return false;
+    }
+  });
+}
+
+function parseCommandArgs(value) {
+  const trimmed = String(value || "").trim();
+
+  if (!trimmed) {
+    return [];
+  }
+
+  return trimmed.match(/(?:[^\s"]+|"[^"]*")+/g)?.map((part) => part.replace(/^"|"$/g, "")) || [];
 }
