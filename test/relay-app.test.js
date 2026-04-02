@@ -49,9 +49,41 @@ test("When /sessions is requested in DM, then relay shows create and open action
   const buttons = sent.options.reply_markup.inline_keyboard.flat();
 
   assert.match(sent.text, /Agent sessions/);
-  assert.ok(buttons.some((button) => button.callback_data === "session:create:headless-1"));
+  assert.ok(buttons.some((button) => button.callback_data?.startsWith("session:ui:")));
   assert.ok(buttons.some((button) => button.url === "https://t.me/c/1001/4"));
   assert.ok(buttons.some((button) => button.callback_data === "dm:new"));
+});
+
+test("When /sessions includes long session ids, then button payloads stay within Telegram limits", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const app = createTestApp({ store, telegram });
+
+  await store.saveSession({
+    id: "deploy-session-2a92a111-31f8-4001-8715-4e9fa02ca830",
+    label: "Deploy Smoke",
+    threadId: "thread-1",
+    cwd: "/repo",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+    status: "headless",
+  });
+
+  await app.initialize();
+  await app.handleUpdate({
+    message: {
+      text: "/sessions",
+      chat: { id: TEST_USER_ID, type: "private" },
+      from: { id: TEST_USER_ID },
+    },
+  });
+
+  const sent = telegram.calls.sendMessage.at(-1);
+  const callbackButtons = sent.options.reply_markup.inline_keyboard
+    .flat()
+    .filter((button) => button.callback_data);
+
+  assert.equal(callbackButtons.every((button) => button.callback_data.length <= 64), true);
 });
 
 test("When /start is requested in DM, then relay shows the home buttons", async () => {
@@ -238,9 +270,21 @@ test("When create-topic is tapped, then relay binds the session and refreshes th
 
   await app.initialize();
   await app.handleUpdate({
+    message: {
+      text: "/sessions",
+      chat: { id: TEST_USER_ID, type: "private" },
+      from: { id: TEST_USER_ID },
+    },
+  });
+
+  const bindButton = telegram.calls.sendMessage
+    .at(-1)
+    .options.reply_markup.inline_keyboard[0][0];
+
+  await app.handleUpdate({
     callback_query: {
       id: "cb-1",
-      data: "session:create:session-1",
+      data: bindButton.callback_data,
       from: { id: TEST_USER_ID },
       message: {
         message_id: 9,
@@ -303,21 +347,16 @@ test("When a topic keyboard latest button is tapped, then relay resends the late
   assert.equal(answer.options.text, "Latest reply sent.");
 });
 
-test("When a topic message continues a bound session, then relay streams progress and stores the final reply", async () => {
+test("When a topic message continues a bound session, then relay sends only the final reply and stores it", async () => {
   const store = await createTempStore();
   const telegram = createFakeTelegram();
-  let nowMs = 0;
   const app = createTestApp({
     store,
     telegram,
-    clock: () => nowMs,
     runTurn: async ({ onProgress }) => {
       onProgress({ type: "command_started", command: "npm test" });
-      nowMs = 1000;
       onProgress({ type: "command_output_delta", delta: "running\n" });
-      nowMs = 2000;
       onProgress({ type: "agent_message_delta", delta: "Partial" });
-      nowMs = 3000;
       onProgress({ type: "agent_message_delta", delta: " reply" });
       return {
         threadId: "thread-2",
@@ -352,19 +391,16 @@ test("When a topic message continues a bound session, then relay streams progres
   await app.waitForIdle();
 
   const session = await store.getSession("session-2");
-  const progressEdit = telegram.calls.editMessage.find((call) =>
-    call.text.includes("draft reply:"),
-  );
-  const finalMessage = telegram.calls.replaceProgressMessage.at(-1);
+  const finalMessage = telegram.calls.sendLongMessage.at(-1);
 
   assert.equal(session?.threadId, "thread-2");
   assert.equal(session?.latestAssistantMessage, "Final reply");
-  assert.ok(progressEdit);
+  assert.equal(telegram.calls.replaceProgressMessage.length, 0);
   assert.equal(finalMessage.text, "Final reply");
   assert.ok(telegram.calls.sendChatAction.length >= 1);
 });
 
-test("When a second topic prompt arrives while Codex is still running, then it is acknowledged as queued", async () => {
+test("When a second topic prompt arrives while Codex is still running, then replies are sent in order without progress messages", async () => {
   const store = await createTempStore();
   const telegram = createFakeTelegram();
   let releaseFirstTurn = () => {};
@@ -430,14 +466,14 @@ test("When a second topic prompt arrives while Codex is still running, then it i
     },
   });
 
-  const queuedNotice = telegram.calls.sendMessage.at(-1);
-
-  assert.match(queuedNotice.text, /state: queued/);
-  assert.match(queuedNotice.text, /ahead: 1 turn/);
-
   await firstTurnStarted;
   releaseFirstTurn();
   await app.waitForIdle();
+
+  const replies = telegram.calls.sendLongMessage.map((call) => call.text);
+
+  assert.deepEqual(replies, ["First reply", "Second reply"]);
+  assert.equal(telegram.calls.replaceProgressMessage.length, 0);
 });
 
 test("When a topic message targets a remote host session, then relay queues the job instead of running it locally", async () => {
@@ -488,6 +524,8 @@ test("When a topic message targets a remote host session, then relay queues the 
   assert.equal(hubServer.calls.length, 1);
   assert.equal(hubServer.calls[0].session.hostId, "desktop");
   assert.equal(hubServer.calls[0].payload.prompt, "continue remotely");
+  assert.equal(hubServer.calls[0].payload.progressMessageId, undefined);
+  assert.equal(telegram.calls.sendMessage.length, 0);
   assert.equal(telegram.calls.replaceProgressMessage.length, 0);
 });
 

@@ -1,11 +1,7 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { applyHookEvent } from "./hook-index.js";
-import {
-  applyProgressUpdate,
-  createProgressState,
-  formatProgressMessage,
-} from "./relay-app.js";
+import { createProgressState } from "./relay-app.js";
 
 export function createHubServer({
   botConfig,
@@ -62,31 +58,13 @@ export function createHubServer({
           return sendJson(response, 404, { error: "job not found" });
         }
 
-        const nextProgressState = applyProgressUpdate(
-          { ...job.progressState },
-          payload.update || {},
-        );
-        const updatedJob = await store.updateJob(jobId, {
-          progressState: nextProgressState,
+        await store.updateJob(jobId, {
+          progressState: {
+            ...job.progressState,
+            ...(payload.update || {}),
+          },
           updatedAt: now(),
         });
-
-        if (updatedJob?.chatId && updatedJob.progressMessageId) {
-          try {
-            await telegram.editMessage(
-              updatedJob.chatId,
-              updatedJob.progressMessageId,
-              formatProgressMessage(updatedJob.progressState),
-              {
-                message_thread_id: updatedJob.messageThreadId,
-              },
-            );
-          } catch (error) {
-            if (!String(error.message).includes("message is not modified")) {
-              throw error;
-            }
-          }
-        }
 
         return sendJson(response, 200, { ok: true });
       }
@@ -136,15 +114,29 @@ export function createHubServer({
           updatedAt: now(),
         });
 
-        if (job.chatId && job.progressMessageId) {
-          await telegram.replaceProgressMessage(
-            job.chatId,
-            { message_id: job.progressMessageId },
-            isFailure ? `Codex failed.\n\n${payload.error}` : payload.message,
-            {
-              message_thread_id: job.messageThreadId,
-            },
-          );
+        if (job.chatId) {
+          try {
+            if (job.progressMessageId) {
+              await telegram.replaceProgressMessage(
+                job.chatId,
+                { message_id: job.progressMessageId },
+                isFailure ? `Codex failed.\n\n${payload.error}` : payload.message,
+                {
+                  message_thread_id: job.messageThreadId,
+                },
+              );
+            } else {
+              await telegram.sendLongMessage(
+                job.chatId,
+                isFailure ? `Codex failed.\n\n${payload.error}` : payload.message,
+                {
+                  message_thread_id: job.messageThreadId,
+                },
+              );
+            }
+          } catch (deliveryError) {
+            logger.error(deliveryError);
+          }
         }
 
         return sendJson(response, 200, { ok: true });

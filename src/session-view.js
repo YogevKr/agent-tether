@@ -84,7 +84,14 @@ export function formatSessionsPanel({ forumTitle, sessions, limit = MAX_PANEL_SE
   return lines.join("\n").trim();
 }
 
-export function buildSessionsKeyboard(sessions) {
+export function buildSessionsKeyboard(
+  sessions,
+  {
+    bindSession = (session) => `session:create:${session.id}`,
+    showSessionDetails = (session) => `session:details:${session.id}`,
+    showLatestSessionReply = (session) => `session:latest:${session.id}`,
+  } = {},
+) {
   const inline_keyboard = sessions.slice(0, MAX_PANEL_SESSIONS).flatMap((session) => {
     const label = truncateLabel(session.label, 18);
     const primaryButton =
@@ -95,18 +102,18 @@ export function buildSessionsKeyboard(sessions) {
         }
       : {
           text: `Bind ${label}`,
-          callback_data: `session:create:${session.id}`,
+          callback_data: bindSession(session),
         };
 
     return [[
       primaryButton,
       {
         text: "Details",
-        callback_data: `session:details:${session.id}`,
+        callback_data: showSessionDetails(session),
       },
       {
         text: "Latest",
-        callback_data: `session:latest:${session.id}`,
+        callback_data: showLatestSessionReply(session),
       },
     ]];
   });
@@ -139,7 +146,13 @@ export function buildSessionsKeyboard(sessions) {
   return { inline_keyboard };
 }
 
-export function buildSessionDetailKeyboard(session) {
+export function buildSessionDetailKeyboard(
+  session,
+  {
+    bindSession = (item) => `session:create:${item.id}`,
+    showLatestSessionReply = (item) => `session:latest:${item.id}`,
+  } = {},
+) {
   const inline_keyboard = [];
 
   inline_keyboard.push([
@@ -150,11 +163,11 @@ export function buildSessionDetailKeyboard(session) {
         }
       : {
           text: "Bind Topic",
-          callback_data: `session:create:${session.id}`,
+          callback_data: bindSession(session),
         },
     {
       text: "Latest Reply",
-      callback_data: `session:latest:${session.id}`,
+      callback_data: showLatestSessionReply(session),
     },
   ]);
 
@@ -212,7 +225,14 @@ export function buildDmHomeKeyboard() {
   };
 }
 
-export function buildTopicKeyboard(session) {
+export function buildTopicKeyboard(
+  session,
+  {
+    showTopicStatus = (item) => `topic:status:${item.id}`,
+    showLatestTopicReply = (item) => `topic:latest:${item.id}`,
+    detachTopicSession = (item) => `topic:reset:${item.id}`,
+  } = {},
+) {
   if (!session) {
     return {
       inline_keyboard: [
@@ -231,17 +251,17 @@ export function buildTopicKeyboard(session) {
       [
         {
           text: "Status",
-          callback_data: `topic:status:${session.id}`,
+          callback_data: showTopicStatus(session),
         },
         {
           text: "Latest",
-          callback_data: `topic:latest:${session.id}`,
+          callback_data: showLatestTopicReply(session),
         },
       ],
       [
         {
           text: "Detach",
-          callback_data: `topic:reset:${session.id}`,
+          callback_data: detachTopicSession(session),
         },
       ],
     ],

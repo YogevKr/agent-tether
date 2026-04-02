@@ -49,24 +49,12 @@ async function executeJob(job, session) {
       return;
     }
 
-    await postJson(`${codexConfig.hubUrl}/api/jobs/${job.id}/progress`, {
-      update: {
-        type: "status",
-        phase: "waiting for Codex",
-      },
-    });
-
     const result = await runCodexTurn({
       codex: codexConfig,
       prompt: job.prompt,
       cwd: session.cwd || codexConfig.defaultCwd,
       threadId: session.threadId,
       model: session.model || codexConfig.model,
-      onProgress: async (update) => {
-        await postJson(`${codexConfig.hubUrl}/api/jobs/${job.id}/progress`, {
-          update,
-        });
-      },
     });
 
     await postJson(`${codexConfig.hubUrl}/api/jobs/${job.id}/complete`, {
