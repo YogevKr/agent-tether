@@ -9,6 +9,8 @@ export async function runCodexTurn({
   cwd,
   threadId = "",
   model = "",
+  attachments = null,
+  signal,
   onEvent,
   onProgress,
 }) {
@@ -22,6 +24,7 @@ export async function runCodexTurn({
     cwd,
     threadId,
     model,
+    attachments,
     outputFile,
   });
 
@@ -31,6 +34,20 @@ export async function runCodexTurn({
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
     });
+
+    if (signal) {
+      if (signal.aborted) {
+        child.kill("SIGTERM");
+      } else {
+        signal.addEventListener(
+          "abort",
+          () => {
+            child.kill("SIGTERM");
+          },
+          { once: true },
+        );
+      }
+    }
 
     let stdoutBuffer = "";
     let stderr = "";
@@ -120,6 +137,7 @@ export function buildCodexArgs({
   cwd,
   threadId,
   model,
+  attachments,
   outputFile,
 }) {
   const defaultArgs = codex.defaultArgs || [];
@@ -150,6 +168,10 @@ export function buildCodexArgs({
 
   if (threadId) {
     args.push(threadId);
+  }
+
+  for (const imagePath of attachments?.imagePaths || []) {
+    args.push("--image", imagePath);
   }
 
   args.push(prompt);

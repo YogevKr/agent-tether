@@ -9,6 +9,8 @@ export async function runAgentTurn({
   cwd,
   threadId = "",
   model = "",
+  attachments = null,
+  signal,
   onEvent,
   onProgress,
 }) {
@@ -22,6 +24,8 @@ export async function runAgentTurn({
       cwd,
       threadId,
       model,
+      attachments,
+      signal,
       onEvent,
       onProgress,
     });
@@ -33,6 +37,8 @@ export async function runAgentTurn({
     cwd,
     threadId,
     model,
+    attachments,
+    signal,
     onEvent,
     onProgress,
   });

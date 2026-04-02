@@ -47,6 +47,10 @@ export function getRuntimeConfig() {
       process.env.CODEX_DEFAULT_CWD || process.cwd(),
       "CODEX_DEFAULT_CWD",
     ),
+    telegramToken: process.env.TELEGRAM_BOT_TOKEN || "",
+    telegramApiBaseUrl:
+      process.env.TELEGRAM_API_BASE_URL || "https://api.telegram.org",
+    whisperBin: process.env.WHISPER_BIN || "whisper",
     hostId: process.env.RELAY_HOST_ID || os.hostname(),
     startRoots: getStartRoots(),
     hubUrl: process.env.RELAY_HUB_URL || "",

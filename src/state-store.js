@@ -233,6 +233,47 @@ export class StateStore {
     });
   }
 
+  async pullQueuedJobForSession(sessionId, { now = new Date().toISOString() } = {}) {
+    return this.runExclusive(async () => {
+      const state = await this.readFromDisk();
+      const session = state.sessions[String(sessionId)];
+
+      if (!session || session.isBusy) {
+        return null;
+      }
+
+      const next = Object.values(state.jobs)
+        .filter(
+          (job) =>
+            job.sessionId === String(sessionId) &&
+            job.kind === "run-turn" &&
+            job.status === "queued",
+        )
+        .sort(compareJobs)[0];
+
+      if (!next) {
+        return null;
+      }
+
+      const claimed = normalizeJob({
+        ...next,
+        status: "running",
+        startedAt: next.startedAt || now,
+        updatedAt: now,
+      });
+
+      state.jobs[claimed.id] = claimed;
+      state.sessions[String(sessionId)] = normalizeSession({
+        ...session,
+        isBusy: true,
+        activeRunSource: "telegram",
+        updatedAt: now,
+      });
+      await this.writeToDisk(state);
+      return claimed;
+    });
+  }
+
   async createJob(job) {
     return this.runExclusive(async () => {
       const state = await this.readFromDisk();
@@ -268,6 +309,51 @@ export class StateStore {
       state.jobs[jobId] = next;
       await this.writeToDisk(state);
       return next;
+    });
+  }
+
+  async requestStopForSession(sessionId, { now = new Date().toISOString() } = {}) {
+    return this.runExclusive(async () => {
+      const state = await this.readFromDisk();
+      const session = state.sessions[String(sessionId)] || null;
+
+      let cancelledQueuedCount = 0;
+      let runningJob = null;
+
+      for (const [jobId, job] of Object.entries(state.jobs)) {
+        if (job.sessionId !== String(sessionId)) {
+          continue;
+        }
+
+        if (job.status === "queued") {
+          state.jobs[jobId] = normalizeJob({
+            ...job,
+            status: "cancelled",
+            updatedAt: now,
+            completedAt: now,
+            error: "Stopped from Telegram.",
+          });
+          cancelledQueuedCount += 1;
+          continue;
+        }
+
+        if (job.status === "running" && !job.cancelRequestedAt) {
+          const next = normalizeJob({
+            ...job,
+            cancelRequestedAt: now,
+            updatedAt: now,
+          });
+          state.jobs[jobId] = next;
+          runningJob = next;
+        }
+      }
+
+      await this.writeToDisk(state);
+      return {
+        session,
+        runningJob,
+        cancelledQueuedCount,
+      };
     });
   }
 
@@ -463,6 +549,26 @@ function normalizeJob(job) {
     completedAt: String(job.completedAt || ""),
     finalMessage: String(job.finalMessage || ""),
     error: String(job.error || ""),
+    cancelRequestedAt: String(job.cancelRequestedAt || ""),
+    attachments: Array.isArray(job.attachments)
+      ? job.attachments.map((attachment) => ({
+          kind: normalizeAttachmentKind(attachment.kind),
+          fileId: String(attachment.fileId || ""),
+          fileUniqueId: String(attachment.fileUniqueId || ""),
+          fileName: String(attachment.fileName || ""),
+          mimeType: String(attachment.mimeType || ""),
+          fileSize:
+            attachment.fileSize === null || attachment.fileSize === undefined || attachment.fileSize === ""
+              ? null
+              : Number(attachment.fileSize),
+          durationSeconds:
+            attachment.durationSeconds === null ||
+            attachment.durationSeconds === undefined ||
+            attachment.durationSeconds === ""
+              ? null
+              : Number(attachment.durationSeconds),
+        }))
+      : [],
   };
 }
 
@@ -498,7 +604,12 @@ function normalizeStatus(status) {
 }
 
 function normalizeJobStatus(status) {
-  if (status === "running" || status === "completed" || status === "failed") {
+  if (
+    status === "running" ||
+    status === "completed" ||
+    status === "failed" ||
+    status === "cancelled"
+  ) {
     return status;
   }
 
@@ -511,6 +622,14 @@ function normalizeJobKind(kind) {
   }
 
   return "run-turn";
+}
+
+function normalizeAttachmentKind(kind) {
+  if (kind === "image" || kind === "voice") {
+    return kind;
+  }
+
+  return "document";
 }
 
 function compareJobs(left, right) {

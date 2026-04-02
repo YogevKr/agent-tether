@@ -6,12 +6,15 @@ export async function runClaudeTurn({
   cwd,
   threadId = "",
   model = "",
+  attachments = null,
+  signal,
 }) {
   const args = buildClaudeArgs({
     claude,
     prompt,
     threadId,
     model,
+    attachments,
   });
 
   return new Promise((resolve, reject) => {
@@ -20,6 +23,20 @@ export async function runClaudeTurn({
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
     });
+
+    if (signal) {
+      if (signal.aborted) {
+        child.kill("SIGTERM");
+      } else {
+        signal.addEventListener(
+          "abort",
+          () => {
+            child.kill("SIGTERM");
+          },
+          { once: true },
+        );
+      }
+    }
 
     let stdout = "";
     let stderr = "";
@@ -72,6 +89,7 @@ export function buildClaudeArgs({
   prompt,
   threadId,
   model,
+  attachments,
 }) {
   const args = [...(claude.defaultArgs || []), "-p", "--output-format", "json"];
 
@@ -85,6 +103,10 @@ export function buildClaudeArgs({
 
   if (claude.permissionMode) {
     args.push("--permission-mode", claude.permissionMode);
+  }
+
+  for (const extraDir of attachments?.extraDirs || []) {
+    args.push("--add-dir", extraDir);
   }
 
   args.push(prompt);

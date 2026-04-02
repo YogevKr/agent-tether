@@ -68,6 +68,14 @@ const GROUP_COMMANDS = [
     description: "Resend the latest assistant reply",
   },
   {
+    command: "queue",
+    description: "Show queued and running Telegram prompts",
+  },
+  {
+    command: "stop",
+    description: "Stop the running turn and clear queued prompts",
+  },
+  {
     command: "reset",
     description: "Detach this topic from the session",
   },

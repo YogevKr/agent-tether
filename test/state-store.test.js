@@ -231,3 +231,48 @@ test("When listing sessions, then they are sorted by newest updatedAt first", as
     ["session-new", "session-old"],
   );
 });
+
+test("When stopping a session, then queued jobs are cancelled and the running job gets a cancel request", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-store-"));
+  const store = new StateStore(path.join(tempDir, "state.json"));
+
+  await store.saveSession({
+    id: "session-stop-1",
+    label: "Stop me",
+    cwd: "/repo",
+    hostId: "mbp",
+    isBusy: true,
+    activeRunSource: "telegram",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+  });
+  await store.createJob({
+    id: "job-stop-running",
+    sessionId: "session-stop-1",
+    hostId: "mbp",
+    prompt: "running prompt",
+    status: "running",
+    createdAt: "2026-04-02T10:01:00.000Z",
+    updatedAt: "2026-04-02T10:01:00.000Z",
+  });
+  await store.createJob({
+    id: "job-stop-queued",
+    sessionId: "session-stop-1",
+    hostId: "mbp",
+    prompt: "queued prompt",
+    status: "queued",
+    createdAt: "2026-04-02T10:02:00.000Z",
+    updatedAt: "2026-04-02T10:02:00.000Z",
+  });
+
+  const outcome = await store.requestStopForSession("session-stop-1", {
+    now: "2026-04-02T10:03:00.000Z",
+  });
+  const running = await store.getJob("job-stop-running");
+  const queued = await store.getJob("job-stop-queued");
+
+  assert.equal(outcome.runningJob?.id, "job-stop-running");
+  assert.equal(outcome.cancelledQueuedCount, 1);
+  assert.equal(running?.cancelRequestedAt, "2026-04-02T10:03:00.000Z");
+  assert.equal(queued?.status, "cancelled");
+});

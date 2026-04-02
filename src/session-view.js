@@ -29,8 +29,8 @@ export function topicHelpText(session) {
   return [
     `Session: ${session.label}`,
     "",
-    "Use the buttons below for status, latest reply, detach, or archive.",
-    "Plain text continues the bound agent session.",
+    "Use the buttons below for status, queue, stop, latest reply, detach, or archive.",
+    "Plain text, images, documents, or voice continue the bound agent session.",
   ].join("\n");
 }
 
@@ -327,6 +327,8 @@ export function buildTopicKeyboard(
   session,
   {
     showTopicStatus = (item) => `topic:status:${item.id}`,
+    showTopicQueue = (item) => `topic:queue:${item.id}`,
+    stopTopicSession = (item) => `topic:stop:${item.id}`,
     showLatestTopicReply = (item) => `topic:latest:${item.id}`,
     detachTopicSession = (item) => `topic:reset:${item.id}`,
     archiveTopicSession = (item) => `topic:archive:${item.id}`,
@@ -351,6 +353,16 @@ export function buildTopicKeyboard(
         {
           text: "Status",
           callback_data: showTopicStatus(session),
+        },
+        {
+          text: "Queue",
+          callback_data: showTopicQueue(session),
+        },
+      ],
+      [
+        {
+          text: "Stop",
+          callback_data: stopTopicSession(session),
         },
         {
           text: "Latest",
@@ -380,11 +392,11 @@ export function formatTopicBootstrap(session, topicLink) {
     `host: ${session.hostId || "local"}`,
     `cwd: ${session.cwd}`,
     "",
-    "Plain text in this topic continues the bound agent session.",
+    "Plain text, images, documents, or voice in this topic continue the bound agent session.",
     session.threadId
       ? `Back on computer: ${buildResumeCommand(session)}`
       : "Send the first prompt here to start the session.",
-    "Buttons below handle status, latest reply, detach, and archive.",
+    "Buttons below handle status, queue, stop, latest reply, detach, and archive.",
     "",
     `Topic link: ${topicLink}`,
   ];
@@ -433,6 +445,42 @@ export function formatLatestReply(session) {
   ].join("\n");
 }
 
+export function formatQueuePanel({ session, jobs }) {
+  const runningJobs = jobs.filter((job) => job.status === "running");
+  const queuedJobs = jobs.filter((job) => job.status === "queued");
+  const lines = [
+    `Queue: ${session.label}`,
+    `provider: ${formatProviderName(session.provider)}`,
+    `host: ${session.hostId || "local"}`,
+    `active_source: ${session.activeRunSource || "idle"}`,
+    `running: ${runningJobs.length}`,
+    `queued: ${queuedJobs.length}`,
+  ];
+
+  if (runningJobs.length === 0 && queuedJobs.length === 0) {
+    if (session.isBusy && session.activeRunSource === "local-cli") {
+      lines.push("", "A local CLI turn is still running on the computer.");
+    } else {
+      lines.push("", "No Telegram-run work is in flight.");
+    }
+    return lines.join("\n");
+  }
+
+  lines.push("");
+
+  jobs.forEach((job, index) => {
+    lines.push(
+      `${index + 1}. ${job.status} · ${summarizePrompt(job.prompt)}${job.attachments?.length ? ` · attachments=${job.attachments.length}` : ""}`,
+    );
+  });
+
+  if (session.isBusy && session.activeRunSource === "local-cli") {
+    lines.push("", "Local CLI run is still active; queued Telegram prompts will wait.");
+  }
+
+  return lines.join("\n");
+}
+
 export function shortSessionId(sessionId) {
   return sessionId.slice(0, 8);
 }
@@ -456,6 +504,16 @@ function buildResumeCommand(session) {
   }
 
   return `cd ${session.cwd} && codex resume ${session.threadId}`;
+}
+
+function summarizePrompt(prompt) {
+  const compact = String(prompt || "").replace(/\s+/g, " ").trim();
+
+  if (compact.length <= 72) {
+    return compact || "(no prompt saved)";
+  }
+
+  return `${compact.slice(0, 69)}...`;
 }
 
 export function formatProviderName(provider) {

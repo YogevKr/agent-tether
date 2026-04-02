@@ -982,6 +982,220 @@ test("When a Claude topic turn runs without a saved model, then the Claude provi
   assert.equal(telegram.calls.sendLongMessage.at(-1).text, "Claude final reply");
 });
 
+test("When /queue is requested in a bound topic, then relay shows running and queued prompts", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const app = createTestApp({ store, telegram });
+
+  await store.saveSession({
+    id: "queue-topic-1",
+    label: "Queue topic",
+    threadId: "thread-queue-topic-1",
+    cwd: "/repo",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+    status: "bound",
+    forumChatId: "-1001",
+    topicId: 22,
+    topicName: "Queue topic",
+    topicLink: "https://t.me/c/1001/22",
+    isBusy: true,
+    activeRunSource: "local-cli",
+  });
+  await store.createJob({
+    id: "queue-job-1",
+    sessionId: "queue-topic-1",
+    hostId: "mbp",
+    prompt: "queued follow-up",
+    status: "queued",
+    createdAt: "2026-04-02T10:01:00.000Z",
+    updatedAt: "2026-04-02T10:01:00.000Z",
+  });
+
+  await app.initialize();
+  await app.handleUpdate({
+    message: {
+      text: "/queue",
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: TEST_USER_ID },
+      message_thread_id: 22,
+    },
+  });
+
+  const sent = telegram.calls.sendMessage.at(-1);
+  assert.match(sent.text, /Queue: Queue topic/);
+  assert.match(sent.text, /running: 0/);
+  assert.match(sent.text, /queued: 1/);
+  assert.match(sent.text, /Local CLI run is still active/);
+});
+
+test("When /stop is requested in a bound topic, then the running turn is aborted and queued prompts are cleared", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const runCalls = [];
+  const app = createTestApp({
+    store,
+    telegram,
+    runTurn: async (input) => {
+      runCalls.push(input);
+      return new Promise((resolve, reject) => {
+        input.signal.addEventListener(
+          "abort",
+          () => reject(new Error("aborted")),
+          { once: true },
+        );
+      });
+    },
+  });
+
+  await store.saveSession({
+    id: "stop-topic-1",
+    label: "Stop topic",
+    threadId: "thread-stop-topic-1",
+    cwd: "/repo",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+    status: "bound",
+    forumChatId: "-1001",
+    topicId: 23,
+    topicName: "Stop topic",
+    topicLink: "https://t.me/c/1001/23",
+  });
+
+  await app.initialize();
+  await app.handleUpdate({
+    message: {
+      text: "run forever",
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: TEST_USER_ID },
+      message_thread_id: 23,
+      message_id: 1,
+    },
+  });
+  await Promise.resolve();
+
+  await app.handleUpdate({
+    message: {
+      text: "queued prompt",
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: TEST_USER_ID },
+      message_thread_id: 23,
+      message_id: 2,
+    },
+  });
+
+  await app.handleUpdate({
+    message: {
+      text: "/stop",
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: TEST_USER_ID },
+      message_thread_id: 23,
+      message_id: 3,
+    },
+  });
+  await app.waitForIdle();
+
+  const jobs = await store.listJobsForSession("stop-topic-1", {
+    statuses: ["cancelled"],
+  });
+  const session = await store.getSession("stop-topic-1");
+  const stopMessage = telegram.calls.sendMessage.at(-1);
+
+  assert.equal(runCalls.length, 1);
+  assert.equal(jobs.length, 2);
+  assert.equal(session?.isBusy, false);
+  assert.match(stopMessage.text, /Stopping the current Telegram-run turn/);
+  assert.match(stopMessage.text, /Cleared 1 queued prompt/);
+  assert.equal(telegram.calls.sendLongMessage.length, 0);
+});
+
+test("When a topic message includes Telegram attachments, then relay downloads them and passes attachment context into the turn", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram({
+    files: {
+      photo1: {
+        file_path: "photos/topic-photo.jpg",
+        content: "image-bytes",
+      },
+      doc1: {
+        file_path: "docs/spec.txt",
+        content: "hello from the attached document",
+      },
+    },
+  });
+  const runCalls = [];
+  const app = createTestApp({
+    store,
+    telegram,
+    runTurn: async (input) => {
+      runCalls.push({
+        prompt: input.prompt,
+        imagePaths: [...input.attachments.imagePaths],
+        extraDirs: [...input.attachments.extraDirs],
+        documentText: await fs.readFile(
+          path.join(input.attachments.extraDirs[0], "spec.txt"),
+          "utf8",
+        ),
+      });
+      return {
+        threadId: "thread-attachments-1",
+        message: "Attachment reply",
+      };
+    },
+  });
+
+  await store.saveSession({
+    id: "attachments-topic-1",
+    label: "Attachments topic",
+    threadId: "thread-attachments-0",
+    cwd: "/repo",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+    status: "bound",
+    forumChatId: "-1001",
+    topicId: 24,
+    topicName: "Attachments topic",
+    topicLink: "https://t.me/c/1001/24",
+  });
+
+  await app.initialize();
+  await app.handleUpdate({
+    message: {
+      caption: "Review these files",
+      photo: [
+        {
+          file_id: "photo1",
+          file_unique_id: "photo-unique-1",
+          file_size: 25,
+        },
+      ],
+      document: {
+        file_id: "doc1",
+        file_unique_id: "doc-unique-1",
+        file_name: "spec.txt",
+        mime_type: "text/plain",
+        file_size: 30,
+      },
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: TEST_USER_ID },
+      message_thread_id: 24,
+      message_id: 4,
+    },
+  });
+  await app.waitForIdle();
+
+  assert.equal(runCalls.length, 1);
+  assert.match(runCalls[0].prompt, /Telegram attachment context/);
+  assert.match(runCalls[0].prompt, /Review these files/);
+  assert.equal(runCalls[0].imagePaths.length, 1);
+  assert.equal(runCalls[0].extraDirs.length, 1);
+  assert.equal(runCalls[0].documentText, "hello from the attached document");
+  assert.deepEqual(
+    telegram.calls.getFile.map((call) => call.fileId),
+    ["photo1", "doc1"],
+  );
+});
+
 async function createTempStore() {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-app-"));
   return new StateStore(path.join(tempDir, "state.json"));
@@ -1039,14 +1253,16 @@ function createTestApp({
   });
 }
 
-function createFakeTelegram() {
+function createFakeTelegram({ files = {} } = {}) {
   let nextMessageId = 1;
   const calls = {
     answerCallbackQuery: [],
     closeForumTopic: [],
     createForumTopic: [],
     deleteForumTopic: [],
+    downloadFile: [],
     editMessage: [],
+    getFile: [],
     replaceProgressMessage: [],
     reopenForumTopic: [],
     setMessageReaction: [],
@@ -1069,6 +1285,29 @@ function createFakeTelegram() {
     },
     async getUpdates() {
       return [];
+    },
+    async getFile(fileId) {
+      calls.getFile.push({ fileId });
+      const file = files[fileId];
+
+      if (!file?.file_path) {
+        throw new Error(`Unknown Telegram file id: ${fileId}`);
+      }
+
+      return {
+        file_id: fileId,
+        file_path: file.file_path,
+      };
+    },
+    async downloadFile(filePath) {
+      calls.downloadFile.push({ filePath });
+      const file = Object.values(files).find((candidate) => candidate.file_path === filePath);
+
+      if (!file) {
+        throw new Error(`Unknown Telegram file path: ${filePath}`);
+      }
+
+      return Buffer.from(file.content || "", "utf8");
     },
     async answerCallbackQuery(id, options = {}) {
       calls.answerCallbackQuery.push({ id, options });

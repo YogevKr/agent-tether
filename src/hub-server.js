@@ -13,6 +13,93 @@ export function createHubServer({
   logger = console,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 }) {
+  async function finalizeJob(jobId, payload) {
+    const job = await store.getJob(jobId);
+
+    if (!job) {
+      const error = new Error("job not found");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const finishedAt = now();
+    const isCancelled = Boolean(payload.cancelled) || Boolean(job.cancelRequestedAt);
+    const isFailure = !isCancelled && Boolean(payload.error);
+
+    if (job.kind === "browse-dir") {
+      await store.updateJob(jobId, {
+        status: isFailure ? "failed" : isCancelled ? "cancelled" : "completed",
+        updatedAt: finishedAt,
+        completedAt: finishedAt,
+        entries: payload.entries || [],
+        error: payload.error || (isCancelled ? "Stopped from Telegram." : ""),
+      });
+      return { ok: true };
+    }
+
+    const session = await store.getSession(job.sessionId);
+
+    if (!session) {
+      const error = new Error("session not found");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    await store.updateJob(jobId, {
+      status: isFailure ? "failed" : isCancelled ? "cancelled" : "completed",
+      updatedAt: finishedAt,
+      completedAt: finishedAt,
+      finalMessage: payload.message || "",
+      error: payload.error || (isCancelled ? "Stopped from Telegram." : ""),
+    });
+
+    await store.updateSession(session.id, {
+      threadId: payload.threadId || session.threadId,
+      latestUserPrompt:
+        !isCancelled && job.prompt
+          ? job.prompt || session.latestUserPrompt
+          : session.latestUserPrompt,
+      latestAssistantMessage:
+        !isCancelled && payload.message
+          ? payload.message || session.latestAssistantMessage
+          : session.latestAssistantMessage,
+      isBusy: false,
+      activeRunSource: "",
+      updatedAt: finishedAt,
+    });
+
+    if (job.chatId && !isCancelled) {
+      try {
+        if (job.progressMessageId) {
+          await telegram.replaceProgressMessage(
+            job.chatId,
+            { message_id: job.progressMessageId },
+            isFailure
+              ? `${formatProviderName(session.provider)} failed.\n\n${payload.error}`
+              : payload.message,
+            {
+              message_thread_id: job.messageThreadId,
+            },
+          );
+        } else {
+          await telegram.sendLongMessage(
+            job.chatId,
+            isFailure
+              ? `${formatProviderName(session.provider)} failed.\n\n${payload.error}`
+              : payload.message,
+            {
+              message_thread_id: job.messageThreadId,
+            },
+          );
+        }
+      } catch (deliveryError) {
+        logger.error(deliveryError);
+      }
+    }
+
+    return { ok: true, sessionId: session.id };
+  }
+
   const server = http.createServer(async (request, response) => {
     try {
       if (request.method === "GET" && request.url === "/api/health") {
@@ -65,6 +152,18 @@ export function createHubServer({
         return sendJson(response, 200, { job, session });
       }
 
+      if (request.method === "GET" && request.url?.match(/^\/api\/jobs\/[^/]+$/)) {
+        assertAuthorized(request, botConfig.hubToken);
+        const jobId = request.url.split("/")[3];
+        const job = await store.getJob(jobId);
+
+        if (!job) {
+          return sendJson(response, 404, { error: "job not found" });
+        }
+
+        return sendJson(response, 200, { job });
+      }
+
       if (request.method === "POST" && request.url?.match(/^\/api\/jobs\/[^/]+\/progress$/)) {
         assertAuthorized(request, botConfig.hubToken);
         const jobId = request.url.split("/")[3];
@@ -90,77 +189,22 @@ export function createHubServer({
         assertAuthorized(request, botConfig.hubToken);
         const jobId = request.url.split("/")[3];
         const payload = await readJson(request);
-        const job = await store.getJob(jobId);
+        return sendJson(response, 200, await finalizeJob(jobId, payload));
+      }
 
-        if (!job) {
-          return sendJson(response, 404, { error: "job not found" });
-        }
-
-        const isFailure = Boolean(payload.error);
-        if (job.kind === "browse-dir") {
-          await store.updateJob(jobId, {
-            status: isFailure ? "failed" : "completed",
-            updatedAt: now(),
-            completedAt: now(),
-            entries: payload.entries || [],
-            error: payload.error || "",
-          });
-          return sendJson(response, 200, { ok: true });
-        }
-
-        const session = await store.getSession(job.sessionId);
-
-        if (!session) {
-          return sendJson(response, 404, { error: "session not found" });
-        }
-
-        await store.updateJob(jobId, {
-          status: isFailure ? "failed" : "completed",
-          updatedAt: now(),
-          completedAt: now(),
-          finalMessage: payload.message || "",
-          error: payload.error || "",
+      if (request.method === "POST" && request.url?.match(/^\/api\/sessions\/[^/]+\/stop$/)) {
+        assertAuthorized(request, botConfig.hubToken);
+        const sessionId = request.url.split("/")[3];
+        const outcome = await store.requestStopForSession(sessionId, {
+          now: now(),
         });
 
-        await store.updateSession(session.id, {
-          threadId: payload.threadId || session.threadId,
-          latestUserPrompt: job.prompt || session.latestUserPrompt,
-          latestAssistantMessage: payload.message || session.latestAssistantMessage,
-          isBusy: false,
-          activeRunSource: "",
-          updatedAt: now(),
+        return sendJson(response, 200, {
+          ok: true,
+          runningJobId: outcome.runningJob?.id || "",
+          cancelledQueuedCount: outcome.cancelledQueuedCount || 0,
+          activeRunSource: outcome.session?.activeRunSource || "",
         });
-
-        if (job.chatId) {
-          try {
-            if (job.progressMessageId) {
-              await telegram.replaceProgressMessage(
-                job.chatId,
-                { message_id: job.progressMessageId },
-                isFailure
-                  ? `${formatProviderName(session.provider)} failed.\n\n${payload.error}`
-                  : payload.message,
-                {
-                  message_thread_id: job.messageThreadId,
-                },
-              );
-            } else {
-              await telegram.sendLongMessage(
-                job.chatId,
-                isFailure
-                  ? `${formatProviderName(session.provider)} failed.\n\n${payload.error}`
-                  : payload.message,
-                {
-                  message_thread_id: job.messageThreadId,
-                },
-              );
-            }
-          } catch (deliveryError) {
-            logger.error(deliveryError);
-          }
-        }
-
-        return sendJson(response, 200, { ok: true });
       }
 
       sendJson(response, 404, { error: "not found" });
@@ -193,7 +237,7 @@ export function createHubServer({
     },
     async queueRemoteJob(
       session,
-      { prompt, chatId, messageThreadId, progressMessageId, pendingAhead = 0 },
+      { prompt, chatId, messageThreadId, progressMessageId, pendingAhead = 0, attachments = [] },
     ) {
       return store.createJob({
         id: randomUUID(),
@@ -201,6 +245,7 @@ export function createHubServer({
         sessionId: session.id,
         hostId: session.hostId,
         prompt,
+        attachments,
         status: "queued",
         chatId,
         messageThreadId,
@@ -211,6 +256,14 @@ export function createHubServer({
         },
         createdAt: now(),
         updatedAt: now(),
+      });
+    },
+    async completeJob(jobId, payload) {
+      return finalizeJob(jobId, payload);
+    },
+    async stopRemoteSession(sessionId) {
+      return store.requestStopForSession(sessionId, {
+        now: now(),
       });
     },
     async requestDirectoryBrowse(hostId, { directoryPath, rootPath, timeoutMs = 8000 }) {

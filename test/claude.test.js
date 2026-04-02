@@ -50,3 +50,31 @@ test("When building a resumed Claude Code turn, then resume and explicit model o
     "Continue from Telegram",
   ]);
 });
+
+test("When building a Claude Code turn with extra attachment directories, then each directory is added", () => {
+  const args = buildClaudeArgs({
+    claude: {
+      defaultArgs: ["--dangerously-skip-permissions"],
+      model: "",
+      permissionMode: "",
+    },
+    prompt: "Check the uploaded files",
+    threadId: "",
+    model: "",
+    attachments: {
+      extraDirs: ["/tmp/upload-one", "/tmp/upload-two"],
+    },
+  });
+
+  assert.deepEqual(args, [
+    "--dangerously-skip-permissions",
+    "-p",
+    "--output-format",
+    "json",
+    "--add-dir",
+    "/tmp/upload-one",
+    "--add-dir",
+    "/tmp/upload-two",
+    "Check the uploaded files",
+  ]);
+});

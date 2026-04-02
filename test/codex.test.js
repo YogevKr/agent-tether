@@ -52,3 +52,38 @@ test("When normalizing app-server events, then streaming updates are recognized"
     },
   ]);
 });
+
+test("When building a resumed codex turn with image attachments, then each image is passed through the CLI", () => {
+  const args = buildCodexArgs({
+    codex: {
+      defaultArgs: ["--yolo"],
+      model: "",
+      approvalPolicy: "never",
+      sandboxMode: "workspace-write",
+      skipGitRepoCheck: false,
+    },
+    prompt: "Review the screenshot",
+    cwd: "/repo",
+    threadId: "thread-123",
+    model: "",
+    attachments: {
+      imagePaths: ["/tmp/one.png", "/tmp/two.png"],
+    },
+    outputFile: "/tmp/out.txt",
+  });
+
+  assert.deepEqual(args, [
+    "--yolo",
+    "exec",
+    "resume",
+    "--json",
+    "-o",
+    "/tmp/out.txt",
+    "thread-123",
+    "--image",
+    "/tmp/one.png",
+    "--image",
+    "/tmp/two.png",
+    "Review the screenshot",
+  ]);
+});

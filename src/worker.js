@@ -1,9 +1,17 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { prepareTelegramAttachments } from "./attachments.js";
 import { getProviderModel, getRuntimeConfig } from "./config.js";
 import { runAgentTurn } from "./agent-runtime.js";
+import { TelegramClient } from "./telegram.js";
 
 const codexConfig = getRuntimeConfig();
+const telegram = codexConfig.telegramToken
+  ? new TelegramClient({
+      token: codexConfig.telegramToken,
+      apiBaseUrl: codexConfig.telegramApiBaseUrl,
+    })
+  : null;
 
 async function main() {
   if (!codexConfig.hubUrl) {
@@ -40,6 +48,10 @@ async function main() {
 }
 
 async function executeJob(job, session) {
+  let attachments = null;
+  let stopMonitor = async () => {};
+  const controller = new AbortController();
+
   try {
     if (job.kind === "browse-dir") {
       const entries = await listDirectories(job.browsePath, job.rootPath, codexConfig.startRoots);
@@ -49,13 +61,18 @@ async function executeJob(job, session) {
       return;
     }
 
+    attachments = await prepareAttachments(job);
+    stopMonitor = monitorJobCancellation(job.id, controller);
+
     const result = await runAgentTurn({
       runtime: codexConfig,
       provider: session.provider || codexConfig.defaultProvider || "codex",
-      prompt: job.prompt,
+      prompt: attachments.prompt,
       cwd: session.cwd || codexConfig.defaultCwd,
       threadId: session.threadId,
       model: session.model || getProviderModel(codexConfig, session.provider),
+      attachments,
+      signal: controller.signal,
     });
 
     await postJson(`${codexConfig.hubUrl}/api/jobs/${job.id}/complete`, {
@@ -64,8 +81,12 @@ async function executeJob(job, session) {
     });
   } catch (error) {
     await postJson(`${codexConfig.hubUrl}/api/jobs/${job.id}/complete`, {
-      error: error.message,
+      cancelled: controller.signal.aborted,
+      error: controller.signal.aborted ? "Stopped from Telegram." : error.message,
     });
+  } finally {
+    await stopMonitor();
+    await attachments?.cleanup?.().catch(() => {});
   }
 }
 
@@ -86,8 +107,69 @@ async function postJson(url, payload) {
   return response.json();
 }
 
+async function getJson(url) {
+  const response = await fetch(url, {
+    headers: {
+      ...(codexConfig.hubToken ? { "x-relay-token": codexConfig.hubToken } : {}),
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} calling ${url}`);
+  }
+
+  return response.json();
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function prepareAttachments(job) {
+  if (!telegram) {
+    return {
+      prompt: job.prompt,
+      imagePaths: [],
+      extraDirs: [],
+      cleanup: async () => {},
+    };
+  }
+
+  return prepareTelegramAttachments({
+    job,
+    telegram,
+    runtime: codexConfig,
+  });
+}
+
+function monitorJobCancellation(jobId, controller) {
+  let stopped = false;
+  const loop = (async () => {
+    while (!stopped && !controller.signal.aborted) {
+      await sleep(1000);
+
+      if (stopped || controller.signal.aborted) {
+        return;
+      }
+
+      try {
+        const payload = await getJson(`${codexConfig.hubUrl}/api/jobs/${jobId}`);
+        const latest = payload?.job;
+
+        if (latest?.cancelRequestedAt || latest?.status === "cancelled") {
+          controller.abort();
+          return;
+        }
+      } catch (error) {
+        console.error("worker cancel check failed:", formatError(error));
+      }
+    }
+  })();
+
+  return async () => {
+    stopped = true;
+    await loop.catch(() => {});
+  };
 }
 
 function formatError(error) {

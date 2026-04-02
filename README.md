@@ -160,9 +160,9 @@ After the next hook event, that session appears in Telegram `/sessions` with its
 - General topic is button-first: `New Session`, `Sessions`, `Archived`, `Status`, `Help`
 - DM exposes the same management flow as fallback
 - `New Session` lets you choose provider, node, place, and folder, then opens a fresh topic
-- Topic messages are still plain text prompts
+- Topic messages can be plain text, images, documents, or voice notes
 - Accepted topic prompts get a best-effort 👀 reaction immediately
-- Topic control messages include buttons for `Status`, `Latest`, `Detach`, and `Archive`
+- Topic control messages include buttons for `Status`, `Queue`, `Stop`, `Latest`, `Detach`, and `Archive`
 - Telegram now posts only the final reply for each turn
 - Session lists are sorted by newest `updatedAt` first and paginated 5 per page
 - Slash commands still work, but normal use should not require typing them
@@ -174,6 +174,7 @@ After the next hook event, that session appears in Telegram `/sessions` with its
 - Locally indexed sessions keep whichever provider started them
 - `CODEX_DEFAULT_ARGS` defaults to `--yolo`
 - `CLAUDE_DEFAULT_ARGS` defaults to `--dangerously-skip-permissions`
+- `WHISPER_BIN` defaults to `whisper` for Telegram voice-note transcription
 - If you keep `--yolo`, Agent Tether will not also add explicit approval/sandbox config flags on top
 - `RELAY_AUTO_ARCHIVE_AFTER_DAYS` defaults to `14`
 - `RELAY_AUTO_PRUNE_AFTER_DAYS` defaults to `60`
@@ -225,7 +226,12 @@ npm run start-session -- --label "docs cleanup" --notify-chat 123456789 --prompt
 Inside a bound forum topic:
 
 - plain text continues the bound agent session
+- images are downloaded and passed through to Codex as image inputs
+- documents are downloaded into a temporary attachment directory and referenced in the prompt context
+- voice notes are downloaded, transcribed with `whisper`, and attached with the transcript
 - Telegram sends the final reply after the turn completes
+- `/queue` shows the running turn plus queued Telegram prompts
+- `/stop` aborts the current Telegram-run turn and clears queued Telegram prompts
 - `/status` shows session details
 - `/latest` resends the latest assistant reply
 - `/reset` detaches the topic and returns the session to headless mode
@@ -290,6 +296,7 @@ MIT
 ## Notes
 
 - Global hooks only index sessions and keep their latest local prompt/reply metadata fresh.
+- If a local CLI turn is still running, `/stop` can clear queued Telegram prompts but cannot kill the local terminal process.
 - `codex exec resume`, `codex resume`, and `claude --resume` all target the same provider-specific session ids. The relay binds Telegram topics to those ids.
 - The Telegram hub only polls Telegram once. Other computers run workers and hooks; they do not poll the bot token.
 - The bot uses long polling. No webhook or public server required.

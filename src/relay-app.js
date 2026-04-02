@@ -3,6 +3,12 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { runAgentTurn } from "./agent-runtime.js";
 import {
+  buildTopicPrompt,
+  extractTelegramAttachments,
+  extractTelegramPrompt,
+  prepareTelegramAttachments,
+} from "./attachments.js";
+import {
   MAX_PANEL_SESSIONS,
   SESSIONS_PAGE_SIZE,
   buildDmHomeKeyboard,
@@ -10,6 +16,7 @@ import {
   buildSessionsKeyboard,
   buildTopicKeyboard,
   dmHelpText,
+  formatQueuePanel,
   formatDmStatus,
   formatLatestReply,
   formatProviderName,
@@ -39,8 +46,8 @@ export function createRelayApp({
   logger = console,
   sleep = defaultSleep,
 }) {
-  const sessionQueues = new Map();
-  const sessionQueueDepths = new Map();
+  const localSessionWorkers = new Map();
+  const localActiveRuns = new Map();
   const uiTokens = new Map();
 
   let offset = 0;
@@ -115,7 +122,7 @@ export function createRelayApp({
 
     const message = update.message;
 
-    if (!message?.text || !message.chat?.id || !message.from?.id) {
+    if (!message?.chat?.id || !message.from?.id) {
       return;
     }
 
@@ -132,7 +139,7 @@ export function createRelayApp({
   async function handleDmMessage(message) {
     const userId = String(message.from.id);
     const chatId = String(message.chat.id);
-    const text = message.text.trim();
+    const text = extractTelegramPrompt(message);
 
     if (!text) {
       return;
@@ -193,11 +200,8 @@ export function createRelayApp({
       return;
     }
 
-    const text = message.text.trim();
-
-    if (!text) {
-      return;
-    }
+    const text = extractTelegramPrompt(message);
+    const attachments = extractTelegramAttachments(message);
 
     const topicId = message.message_thread_id;
 
@@ -247,6 +251,27 @@ export function createRelayApp({
       return;
     }
 
+    if (isCommand(text, "queue", botUsername)) {
+      if (!session) {
+        await telegram.sendMessage(
+          forumChat.id,
+          unboundTopicText("create or bind"),
+          { message_thread_id: topicId },
+        );
+        return;
+      }
+
+      await telegram.sendMessage(
+        forumChat.id,
+        await formatSessionQueuePanel(session),
+        {
+          message_thread_id: topicId,
+          reply_markup: buildTopicKeyboard(session, topicKeyboardActions()),
+        },
+      );
+      return;
+    }
+
     if (isCommand(text, "reset", botUsername)) {
       if (!session) {
         await telegram.sendMessage(
@@ -257,6 +282,7 @@ export function createRelayApp({
         return;
       }
 
+      await requestSessionStop(session);
       await store.detachSession(session.id);
       await telegram.sendMessage(
         forumChat.id,
@@ -264,6 +290,27 @@ export function createRelayApp({
         {
           message_thread_id: topicId,
           reply_markup: buildTopicKeyboard(null, topicKeyboardActions()),
+        },
+      );
+      return;
+    }
+
+    if (isCommand(text, "stop", botUsername)) {
+      if (!session) {
+        await telegram.sendMessage(
+          forumChat.id,
+          unboundTopicText("create or bind"),
+          { message_thread_id: topicId },
+        );
+        return;
+      }
+
+      await telegram.sendMessage(
+        forumChat.id,
+        await stopSessionRuns(session),
+        {
+          message_thread_id: topicId,
+          reply_markup: buildTopicKeyboard(session, topicKeyboardActions()),
         },
       );
       return;
@@ -279,6 +326,7 @@ export function createRelayApp({
         return;
       }
 
+      await requestSessionStop(session);
       await archiveSession(session.id);
       await telegram.sendMessage(
         forumChat.id,
@@ -297,31 +345,36 @@ export function createRelayApp({
       return;
     }
 
+    if (!text && attachments.length === 0) {
+      return;
+    }
+
     const pendingAhead = await countPendingTurns(session);
     await acknowledgeAcceptedTopicMessage(message);
+    const prompt = buildTopicPrompt(message);
 
     if (hubServer && session.hostId && session.hostId !== botConfig.hostId) {
       await hubServer.queueRemoteJob(session, {
-        prompt: text,
+        prompt,
         chatId: forumChat.id,
         messageThreadId: topicId,
         pendingAhead,
+        attachments,
       });
       return;
     }
 
-    enqueueSession(session.id, () =>
-      continueBoundSession(session.id, {
-        prompt: text,
-        messageThreadId: topicId,
-      }),
-    );
+    await queueLocalSessionRun(session, {
+      prompt,
+      attachments,
+      messageThreadId: topicId,
+    });
   }
 
   async function handleGeneralForumMessage(message) {
     const chatId = String(message.chat.id);
     const userId = String(message.from.id);
-    const text = message.text.trim();
+    const text = extractTelegramPrompt(message);
 
     if (isCommand(text, "start", botUsername) || isCommand(text, "help", botUsername)) {
       await renderDmHome(chatId, null, { userId });
@@ -755,6 +808,46 @@ export function createRelayApp({
         return;
       }
 
+      if (context.action === "queue") {
+        await telegram.sendMessage(
+          forumChat.id,
+          session
+            ? await formatSessionQueuePanel(session)
+            : unboundTopicText("bind"),
+          {
+            message_thread_id: topicId,
+            reply_markup: buildTopicKeyboard(session, topicKeyboardActions()),
+          },
+        );
+        await telegram.answerCallbackQuery(query.id, {
+          text: session ? "Queue status sent." : "No session bound.",
+        });
+        return;
+      }
+
+      if (context.action === "stop") {
+        if (!session) {
+          await telegram.answerCallbackQuery(query.id, {
+            text: "No session bound.",
+            show_alert: true,
+          });
+          return;
+        }
+
+        await telegram.sendMessage(
+          forumChat.id,
+          await stopSessionRuns(session),
+          {
+            message_thread_id: topicId,
+            reply_markup: buildTopicKeyboard(session, topicKeyboardActions()),
+          },
+        );
+        await telegram.answerCallbackQuery(query.id, {
+          text: "Stop requested.",
+        });
+        return;
+      }
+
       if (context.action === "reset") {
         if (!session) {
           await telegram.answerCallbackQuery(query.id, {
@@ -764,6 +857,7 @@ export function createRelayApp({
           return;
         }
 
+        await requestSessionStop(session);
         await store.detachSession(session.id);
         await telegram.sendMessage(
           forumChat.id,
@@ -788,6 +882,7 @@ export function createRelayApp({
           return;
         }
 
+        await requestSessionStop(session);
         await archiveSession(session.id);
         await telegram.answerCallbackQuery(query.id, {
           text: "Session archived.",
@@ -832,6 +927,46 @@ export function createRelayApp({
       return;
     }
 
+    if (query.data.startsWith("topic:queue:")) {
+      await telegram.sendMessage(
+        forumChat.id,
+        session
+          ? await formatSessionQueuePanel(session)
+          : unboundTopicText("bind"),
+        {
+          message_thread_id: topicId,
+          reply_markup: buildTopicKeyboard(session, topicKeyboardActions()),
+        },
+      );
+      await telegram.answerCallbackQuery(query.id, {
+        text: session ? "Queue status sent." : "No session bound.",
+      });
+      return;
+    }
+
+    if (query.data.startsWith("topic:stop:")) {
+      if (!session) {
+        await telegram.answerCallbackQuery(query.id, {
+          text: "No session bound.",
+          show_alert: true,
+        });
+        return;
+      }
+
+      await telegram.sendMessage(
+        forumChat.id,
+        await stopSessionRuns(session),
+        {
+          message_thread_id: topicId,
+          reply_markup: buildTopicKeyboard(session, topicKeyboardActions()),
+        },
+      );
+      await telegram.answerCallbackQuery(query.id, {
+        text: "Stop requested.",
+      });
+      return;
+    }
+
     if (query.data.startsWith("topic:reset:")) {
       if (!session) {
         await telegram.answerCallbackQuery(query.id, {
@@ -841,6 +976,7 @@ export function createRelayApp({
         return;
       }
 
+      await requestSessionStop(session);
       await store.detachSession(session.id);
       await telegram.sendMessage(
         forumChat.id,
@@ -864,6 +1000,7 @@ export function createRelayApp({
         return;
       }
 
+      await requestSessionStop(session);
       await archiveSession(session.id);
       await telegram.answerCallbackQuery(query.id, {
         text: "Session archived.",
@@ -1325,45 +1462,105 @@ export function createRelayApp({
     });
   }
 
-  async function continueBoundSession(sessionId, { prompt, messageThreadId }) {
-    let session = await store.getSession(sessionId);
-
-    if (!session || session.status !== "bound") {
-      await telegram.sendMessage(
-        forumChat.id,
-        "This topic is no longer bound to an agent session.",
-        { message_thread_id: messageThreadId },
-      );
-      return;
-    }
-
-    await waitForSessionAvailability(sessionId);
-    session = await store.getSession(sessionId);
-
-    if (!session || session.status !== "bound") {
-      await telegram.sendMessage(
-        forumChat.id,
-        "This topic is no longer bound to an agent session.",
-        { message_thread_id: messageThreadId },
-      );
-      return;
-    }
-
-    await store.updateSession(session.id, {
-      isBusy: true,
-      activeRunSource: "telegram",
+  async function queueLocalSessionRun(session, { prompt, attachments, messageThreadId }) {
+    await store.createJob({
+      id: randomUUID(),
+      kind: "run-turn",
+      sessionId: session.id,
+      hostId: botConfig.hostId,
+      prompt,
+      attachments,
+      status: "queued",
+      chatId: forumChat.id,
+      messageThreadId,
+      createdAt: now(),
       updatedAt: now(),
     });
 
+    startLocalSessionWorker(session.id);
+  }
+
+  function startLocalSessionWorker(sessionId) {
+    if (localSessionWorkers.has(sessionId)) {
+      return localSessionWorkers.get(sessionId);
+    }
+
+    const worker = processLocalSessionQueue(sessionId).finally(() => {
+      if (localSessionWorkers.get(sessionId) === worker) {
+        localSessionWorkers.delete(sessionId);
+      }
+    });
+
+    localSessionWorkers.set(sessionId, worker);
+    return worker;
+  }
+
+  async function processLocalSessionQueue(sessionId) {
+    while (true) {
+      const session = await store.getSession(sessionId);
+
+      if (!session || session.status === "closed") {
+        return;
+      }
+
+      const queuedJobs = await store.listJobsForSession(sessionId, {
+        statuses: ["queued"],
+      });
+      const job = await store.pullQueuedJobForSession(sessionId, {
+        now: now(),
+      });
+
+      if (!job) {
+        if (queuedJobs.length === 0) {
+          return;
+        }
+
+        await sleep(500);
+        continue;
+      }
+
+      const latestSession = await store.getSession(sessionId);
+
+      if (!latestSession || latestSession.status !== "bound") {
+        await finalizeLocalJob(job.id, {
+          cancelled: true,
+          error: "Session is no longer bound to a topic.",
+        });
+        continue;
+      }
+
+      await continueBoundSession(latestSession, job);
+    }
+  }
+
+  async function continueBoundSession(session, job) {
+    const controller = new AbortController();
+    const provider = session.provider || codexConfig.defaultProvider || "codex";
+    const messageThreadId = job.messageThreadId || session.topicId;
+    let preparedAttachments = null;
+
+    localActiveRuns.set(session.id, {
+      jobId: job.id,
+      controller,
+    });
+
     try {
-      const provider = session.provider || codexConfig.defaultProvider || "codex";
+      preparedAttachments = await prepareTelegramAttachments({
+        job,
+        telegram,
+        runtime: codexConfig,
+        logger,
+      });
+
       const result = await runTurn({
         runtime: codexConfig,
         provider,
-        prompt,
+        prompt: preparedAttachments.prompt,
         cwd: session.cwd || codexConfig.defaultCwd,
         threadId: session.threadId,
         model: session.model || resolveProviderModel(codexConfig, provider),
+        attachments: preparedAttachments,
+        signal: controller.signal,
         onProgress: (update) => {
           if (
             update.type === "command_started" ||
@@ -1378,36 +1575,126 @@ export function createRelayApp({
         },
       });
 
-      await store.updateSession(session.id, {
+      await finalizeLocalJob(job.id, {
         threadId: result.threadId,
-        latestUserPrompt: prompt,
-        latestAssistantMessage: result.message,
-        isBusy: false,
-        activeRunSource: "",
-        updatedAt: now(),
-      });
-
-      await telegram.sendLongMessage(forumChat.id, result.message, {
-        message_thread_id: messageThreadId,
+        message: result.message,
       });
     } catch (error) {
-      await store.updateSession(session.id, {
-        isBusy: false,
-        activeRunSource: "",
-        updatedAt: now(),
+      await finalizeLocalJob(job.id, {
+        cancelled: controller.signal.aborted,
+        error: controller.signal.aborted ? "Stopped from Telegram." : error.message,
       });
-      await telegram.sendLongMessage(
-        forumChat.id,
-        `${formatProviderName(session.provider || codexConfig.defaultProvider || "codex")} failed.\n\n${error.message}`,
-        {
-        message_thread_id: messageThreadId,
-        },
-      );
+    } finally {
+      localActiveRuns.delete(session.id);
+      await preparedAttachments?.cleanup?.().catch(() => {});
     }
+  }
+
+  async function finalizeLocalJob(jobId, payload) {
+    const job = await store.getJob(jobId);
+
+    if (!job) {
+      return;
+    }
+
+    const session = await store.getSession(job.sessionId);
+    const finishedAt = now();
+    const isCancelled = Boolean(payload.cancelled) || Boolean(job.cancelRequestedAt);
+    const isFailure = !isCancelled && Boolean(payload.error);
+
+    await store.updateJob(jobId, {
+      status: isFailure ? "failed" : isCancelled ? "cancelled" : "completed",
+      updatedAt: finishedAt,
+      completedAt: finishedAt,
+      finalMessage: payload.message || "",
+      error: payload.error || (isCancelled ? "Stopped from Telegram." : ""),
+    });
+
+    if (!session) {
+      return;
+    }
+
+    await store.updateSession(session.id, {
+      threadId: payload.threadId || session.threadId,
+      latestUserPrompt:
+        !isCancelled && job.prompt
+          ? job.prompt || session.latestUserPrompt
+          : session.latestUserPrompt,
+      latestAssistantMessage:
+        !isCancelled && payload.message
+          ? payload.message || session.latestAssistantMessage
+          : session.latestAssistantMessage,
+      isBusy: false,
+      activeRunSource: "",
+      updatedAt: finishedAt,
+    });
+
+    if (!job.chatId || isCancelled) {
+      return;
+    }
+
+    await telegram.sendLongMessage(
+      job.chatId,
+      isFailure
+        ? `${formatProviderName(session.provider || codexConfig.defaultProvider || "codex")} failed.\n\n${payload.error}`
+        : payload.message,
+      {
+        message_thread_id: job.messageThreadId,
+      },
+    );
   }
 
   async function sendLatestReply(chatId, session, options = {}) {
     await telegram.sendLongMessage(chatId, formatLatestReply(session), options);
+  }
+
+  async function formatSessionQueuePanel(session) {
+    const jobs = await store.listJobsForSession(session.id, {
+      statuses: ["queued", "running"],
+    });
+
+    return formatQueuePanel({
+      session,
+      jobs,
+    });
+  }
+
+  async function requestSessionStop(session) {
+    const outcome = hubServer && session.hostId && session.hostId !== botConfig.hostId
+      ? await hubServer.stopRemoteSession(session.id)
+      : await store.requestStopForSession(session.id, {
+          now: now(),
+        });
+
+    const active = localActiveRuns.get(session.id);
+
+    if (active?.jobId && outcome.runningJob?.id && active.jobId === outcome.runningJob.id) {
+      active.controller.abort();
+    }
+
+    return outcome;
+  }
+
+  async function stopSessionRuns(session) {
+    const outcome = await requestSessionStop(session);
+
+    const messages = [];
+
+    if (outcome.runningJob?.id) {
+      messages.push("Stopping the current Telegram-run turn.");
+    } else if (session.activeRunSource === "local-cli") {
+      messages.push("A local CLI run is still active on the computer. Agent Tether cannot stop that turn.");
+    }
+
+    if (outcome.cancelledQueuedCount > 0) {
+      messages.push(`Cleared ${outcome.cancelledQueuedCount} queued prompt${outcome.cancelledQueuedCount === 1 ? "" : "s"}.`);
+    }
+
+    if (messages.length === 0) {
+      return "Nothing is running or queued for this session.";
+    }
+
+    return messages.join("\n");
   }
 
   async function acknowledgeAcceptedTopicMessage(message) {
@@ -1425,32 +1712,8 @@ export function createRelayApp({
     }
   }
 
-  function enqueueSession(sessionId, task) {
-    sessionQueueDepths.set(sessionId, (sessionQueueDepths.get(sessionId) || 0) + 1);
-    const previous = sessionQueues.get(sessionId) || Promise.resolve();
-    const next = previous
-      .catch(() => {})
-      .then(task)
-      .finally(() => {
-        const remaining = Math.max((sessionQueueDepths.get(sessionId) || 1) - 1, 0);
-
-        if (remaining === 0) {
-          sessionQueueDepths.delete(sessionId);
-        } else {
-          sessionQueueDepths.set(sessionId, remaining);
-        }
-
-        if (sessionQueues.get(sessionId) === next) {
-          sessionQueues.delete(sessionId);
-        }
-      });
-
-    sessionQueues.set(sessionId, next);
-    return next;
-  }
-
   async function waitForIdle() {
-    await Promise.all([...sessionQueues.values()].map((job) => job.catch(() => {})));
+    await Promise.all([...localSessionWorkers.values()].map((job) => job.catch(() => {})));
   }
 
   async function editOrSend(chatId, messageId, text, options = {}) {
@@ -1532,6 +1795,8 @@ export function createRelayApp({
   function topicKeyboardActions() {
     return {
       showTopicStatus: (session) => issueTopicActionToken("status", session.id),
+      showTopicQueue: (session) => issueTopicActionToken("queue", session.id),
+      stopTopicSession: (session) => issueTopicActionToken("stop", session.id),
       showLatestTopicReply: (session) => issueTopicActionToken("latest", session.id),
       detachTopicSession: (session) => issueTopicActionToken("reset", session.id),
       archiveTopicSession: (session) => issueTopicActionToken("archive", session.id),
@@ -1657,29 +1922,15 @@ export function createRelayApp({
   }
 
   async function countPendingTurns(session) {
-    const queueDepth = sessionQueueDepths.get(session.id) || 0;
-    const sessionBusy = session.isBusy ? 1 : 0;
+    const pendingJobs = await store.listJobsForSession(session.id, {
+      statuses: ["queued", "running"],
+    });
+    const runningJobs = pendingJobs.filter((job) => job.status === "running");
+    const queuedJobs = pendingJobs.filter((job) => job.status === "queued");
+    const localBusyWithoutJob =
+      session.isBusy && session.activeRunSource === "local-cli" && runningJobs.length === 0 ? 1 : 0;
 
-    if (hubServer && session.hostId && session.hostId !== botConfig.hostId) {
-      const pendingJobs = await store.listJobsForSession(session.id, {
-        statuses: ["queued", "running"],
-      });
-      return Math.max(pendingJobs.length, sessionBusy);
-    }
-
-    return Math.max(queueDepth, sessionBusy);
-  }
-
-  async function waitForSessionAvailability(sessionId) {
-    while (true) {
-      const session = await store.getSession(sessionId);
-
-      if (!session || !session.isBusy) {
-        return session;
-      }
-
-      await sleep(500);
-    }
+    return runningJobs.length + queuedJobs.length + localBusyWithoutJob;
   }
 
   return {

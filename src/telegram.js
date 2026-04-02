@@ -16,6 +16,12 @@ export class TelegramClient {
     });
   }
 
+  async getFile(fileId) {
+    return this.request("getFile", {
+      file_id: fileId,
+    });
+  }
+
   async getUpdates({ offset, timeoutSeconds }) {
     return this.request("getUpdates", {
       offset,
@@ -153,6 +159,20 @@ export class TelegramClient {
     for (const chunk of chunks.slice(1)) {
       await this.sendMessage(chatId, chunk, options);
     }
+  }
+
+  async downloadFile(filePath) {
+    const response = await fetch(
+      `${this.apiBaseUrl}/file/bot${this.token}/${String(filePath).replace(/^\/+/, "")}`,
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Telegram HTTP ${response.status} downloading file ${filePath}: ${await response.text()}`,
+      );
+    }
+
+    return Buffer.from(await response.arrayBuffer());
   }
 
   async request(method, payload) {
