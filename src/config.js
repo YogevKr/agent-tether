@@ -30,6 +30,12 @@ export function getBotConfig() {
     hubToken: process.env.RELAY_HUB_TOKEN || "",
     hubBindHost: process.env.RELAY_HUB_BIND_HOST || "127.0.0.1",
     hubPort: parsePositiveInt(process.env.RELAY_HUB_PORT, 8787),
+    sessionRetention: {
+      autoArchiveAfterMs:
+        parseNonNegativeInt(process.env.RELAY_AUTO_ARCHIVE_AFTER_DAYS, 14) * 24 * 60 * 60 * 1000,
+      autoPruneAfterMs:
+        parseNonNegativeInt(process.env.RELAY_AUTO_PRUNE_AFTER_DAYS, 60) * 24 * 60 * 60 * 1000,
+    },
   };
 }
 
@@ -138,6 +144,20 @@ function parsePositiveInt(value, fallback) {
   const parsed = Number.parseInt(value, 10);
 
   if (Number.isNaN(parsed) || parsed <= 0) {
+    return fallback;
+  }
+
+  return parsed;
+}
+
+function parseNonNegativeInt(value, fallback) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+
+  if (Number.isNaN(parsed) || parsed < 0) {
     return fallback;
   }
 

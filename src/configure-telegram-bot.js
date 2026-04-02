@@ -21,6 +21,10 @@ const PRIVATE_COMMANDS = [
     description: "List indexed local agent sessions",
   },
   {
+    command: "archived",
+    description: "List archived sessions",
+  },
+  {
     command: "new",
     description: "Create a new session from Telegram",
   },
@@ -36,12 +40,28 @@ const PRIVATE_COMMANDS = [
 
 const GROUP_COMMANDS = [
   {
+    command: "sessions",
+    description: "List sessions in General; topic-safe elsewhere",
+  },
+  {
+    command: "archived",
+    description: "List archived sessions in General",
+  },
+  {
+    command: "new",
+    description: "Create a new session from General",
+  },
+  {
     command: "help",
-    description: "Show topic controls",
+    description: "Show General or topic controls",
   },
   {
     command: "status",
-    description: "Show the bound session details",
+    description: "Show relay status or bound session details",
+  },
+  {
+    command: "chatid",
+    description: "Show your Telegram user id",
   },
   {
     command: "latest",
@@ -50,6 +70,10 @@ const GROUP_COMMANDS = [
   {
     command: "reset",
     description: "Detach this topic from the session",
+  },
+  {
+    command: "archive",
+    description: "Archive this topic session",
   },
 ];
 

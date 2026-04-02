@@ -38,6 +38,10 @@ export class TelegramClient {
     });
   }
 
+  async getMyCommands(options = {}) {
+    return this.request("getMyCommands", options);
+  }
+
   async setChatMenuButton(options = {}) {
     return this.request("setChatMenuButton", options);
   }
@@ -47,6 +51,27 @@ export class TelegramClient {
       chat_id: chatId,
       name,
       ...options,
+    });
+  }
+
+  async closeForumTopic(chatId, topicId) {
+    return this.request("closeForumTopic", {
+      chat_id: chatId,
+      message_thread_id: topicId,
+    });
+  }
+
+  async reopenForumTopic(chatId, topicId) {
+    return this.request("reopenForumTopic", {
+      chat_id: chatId,
+      message_thread_id: topicId,
+    });
+  }
+
+  async deleteForumTopic(chatId, topicId) {
+    return this.request("deleteForumTopic", {
+      chat_id: chatId,
+      message_thread_id: topicId,
     });
   }
 

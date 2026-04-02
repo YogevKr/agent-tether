@@ -204,3 +204,30 @@ test("When concurrent writes hit the store, then all updates persist without tem
   assert.equal(session?.id, "session-5");
   assert.equal(job?.id, "job-2");
 });
+
+test("When listing sessions, then they are sorted by newest updatedAt first", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-store-"));
+  const store = new StateStore(path.join(tempDir, "state.json"));
+
+  await store.saveSession({
+    id: "session-old",
+    label: "Old",
+    cwd: "/repo-old",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+  });
+  await store.saveSession({
+    id: "session-new",
+    label: "New",
+    cwd: "/repo-new",
+    createdAt: "2026-04-02T11:00:00.000Z",
+    updatedAt: "2026-04-02T12:00:00.000Z",
+  });
+
+  const sessions = await store.listSessions();
+
+  assert.deepEqual(
+    sessions.map((session) => session.id),
+    ["session-new", "session-old"],
+  );
+});

@@ -88,6 +88,34 @@ export class StateStore {
     });
   }
 
+  async deleteSession(sessionId) {
+    return this.runExclusive(async () => {
+      const state = await this.readFromDisk();
+      const existing = state.sessions[sessionId];
+
+      if (!existing) {
+        return null;
+      }
+
+      delete state.sessions[sessionId];
+
+      for (const [bindingKey, boundSessionId] of Object.entries(state.topicBindings)) {
+        if (boundSessionId === sessionId) {
+          delete state.topicBindings[bindingKey];
+        }
+      }
+
+      for (const [jobId, job] of Object.entries(state.jobs)) {
+        if (job.sessionId === sessionId) {
+          delete state.jobs[jobId];
+        }
+      }
+
+      await this.writeToDisk(state);
+      return existing;
+    });
+  }
+
   async bindSession(sessionId, binding) {
     return this.runExclusive(async () => {
       const state = await this.readFromDisk();

@@ -14,6 +14,22 @@ export function createHubServer({
 }) {
   const server = http.createServer(async (request, response) => {
     try {
+      if (request.method === "GET" && request.url === "/api/health") {
+        return sendJson(response, 200, {
+          ok: true,
+          hostId: botConfig.hostId,
+          forumChatId: String(botConfig.forumChatId),
+        });
+      }
+
+      if (request.method === "GET" && request.url === "/api/status") {
+        assertAuthorized(request, botConfig.hubToken);
+        return sendJson(response, 200, {
+          ok: true,
+          hosts: await store.listHosts(),
+        });
+      }
+
       if (request.method === "POST" && request.url === "/api/hooks") {
         assertAuthorized(request, botConfig.hubToken);
         const payload = await readJson(request);

@@ -105,9 +105,85 @@ test("When /start is requested in DM, then relay shows the home buttons", async 
 
   assert.match(sent.text, /Agent Tether/);
   assert.ok(buttons.some((button) => button.callback_data === "dm:sessions"));
+  assert.ok(buttons.some((button) => button.callback_data === "dm:archived"));
   assert.ok(buttons.some((button) => button.callback_data === "dm:status"));
   assert.ok(buttons.some((button) => button.callback_data === "dm:help"));
   assert.ok(buttons.some((button) => button.callback_data === "dm:chatid"));
+});
+
+test("When /sessions is requested in the General topic, then relay shows the session management panel there", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const app = createTestApp({ store, telegram });
+
+  await store.saveSession({
+    id: "general-1",
+    label: "General control",
+    threadId: "thread-general-1",
+    cwd: "/repo",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+    status: "headless",
+  });
+
+  await app.initialize();
+  await app.handleUpdate({
+    message: {
+      text: "/sessions",
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: TEST_USER_ID },
+      message_thread_id: 1,
+    },
+  });
+
+  const sent = telegram.calls.sendMessage.at(-1);
+  const buttons = sent.options.reply_markup.inline_keyboard.flat();
+
+  assert.match(sent.text, /Agent sessions/);
+  assert.equal(sent.chatId, "-1001");
+  assert.equal(sent.options.message_thread_id, undefined);
+  assert.ok(buttons.some((button) => button.callback_data === "dm:new"));
+});
+
+test("When /new is requested in the General topic, then relay shows node selection there", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const app = createTestApp({ store, telegram });
+
+  await app.initialize();
+  await app.handleUpdate({
+    message: {
+      text: "/new",
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: TEST_USER_ID },
+      message_thread_id: 1,
+    },
+  });
+
+  const sent = telegram.calls.sendMessage.at(-1);
+
+  assert.match(sent.text, /Choose where to start the new agent session/);
+  assert.equal(sent.chatId, "-1001");
+  assert.equal(sent.options.message_thread_id, undefined);
+});
+
+test("When plain text is sent in the General topic, then relay ignores it", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const app = createTestApp({ store, telegram });
+
+  await app.initialize();
+  await app.handleUpdate({
+    message: {
+      text: "hello from general",
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: TEST_USER_ID },
+      message_thread_id: 1,
+    },
+  });
+
+  assert.equal(telegram.calls.sendMessage.length, 0);
+  assert.equal(telegram.calls.sendLongMessage.length, 0);
 });
 
 test("When the chat id button is tapped in DM, then relay shows the user id as an alert", async () => {
@@ -304,6 +380,110 @@ test("When create-topic is tapped, then relay binds the session and refreshes th
   assert.match(edited.text, /state: bound/);
 });
 
+test("When archive is tapped in DM, then the session is hidden from open sessions and its topic is closed", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const app = createTestApp({ store, telegram });
+
+  await store.saveSession({
+    id: "session-archive-1",
+    label: "Old task",
+    threadId: "thread-archive-1",
+    cwd: "/repo",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+    status: "bound",
+    forumChatId: "-1001",
+    topicId: 24,
+    topicName: "Old task",
+    topicLink: "https://t.me/c/1001/24",
+  });
+
+  await app.initialize();
+  await app.handleUpdate({
+    message: {
+      text: "/sessions",
+      chat: { id: TEST_USER_ID, type: "private" },
+      from: { id: TEST_USER_ID },
+    },
+  });
+
+  const archiveButton = telegram.calls.sendMessage
+    .at(-1)
+    .options.reply_markup.inline_keyboard[0][2];
+
+  await app.handleUpdate({
+    callback_query: {
+      id: "cb-archive",
+      data: archiveButton.callback_data,
+      from: { id: TEST_USER_ID },
+      message: {
+        message_id: 11,
+        chat: { id: TEST_USER_ID, type: "private" },
+      },
+    },
+  });
+
+  const session = await store.getSession("session-archive-1");
+  const openSessions = await store.listSessions();
+  const archived = await store.listSessions({ includeClosed: true });
+
+  assert.equal(session?.status, "closed");
+  assert.equal(openSessions.some((item) => item.id === "session-archive-1"), false);
+  assert.equal(archived.some((item) => item.id === "session-archive-1"), true);
+  assert.equal(telegram.calls.closeForumTopic.length, 1);
+});
+
+test("When archived sessions are opened, then restore brings them back to the open list", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const app = createTestApp({ store, telegram });
+
+  await store.saveSession({
+    id: "session-restore-1",
+    label: "Archived task",
+    threadId: "thread-restore-1",
+    cwd: "/repo",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+    status: "closed",
+    forumChatId: "-1001",
+    topicId: 25,
+    topicName: "Archived task",
+    topicLink: "https://t.me/c/1001/25",
+  });
+
+  await app.initialize();
+  await app.handleUpdate({
+    message: {
+      text: "/archived",
+      chat: { id: TEST_USER_ID, type: "private" },
+      from: { id: TEST_USER_ID },
+    },
+  });
+
+  const restoreButton = telegram.calls.sendMessage
+    .at(-1)
+    .options.reply_markup.inline_keyboard[0][0];
+
+  await app.handleUpdate({
+    callback_query: {
+      id: "cb-restore",
+      data: restoreButton.callback_data,
+      from: { id: TEST_USER_ID },
+      message: {
+        message_id: 12,
+        chat: { id: TEST_USER_ID, type: "private" },
+      },
+    },
+  });
+
+  const session = await store.getSession("session-restore-1");
+
+  assert.equal(session?.status, "bound");
+  assert.equal(telegram.calls.reopenForumTopic.length, 1);
+});
+
 test("When a topic keyboard latest button is tapped, then relay resends the latest reply", async () => {
   const store = await createTempStore();
   const telegram = createFakeTelegram();
@@ -345,6 +525,118 @@ test("When a topic keyboard latest button is tapped, then relay resends the late
   assert.equal(sent.options.message_thread_id, 15);
   assert.ok(sent.options.reply_markup);
   assert.equal(answer.options.text, "Latest reply sent.");
+});
+
+test("When archive is tapped in a topic, then the session is archived and the topic is closed", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const app = createTestApp({ store, telegram });
+
+  await store.saveSession({
+    id: "session-topic-archive-1",
+    label: "Topic archive",
+    threadId: "thread-topic-archive-1",
+    cwd: "/repo",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+    status: "bound",
+    forumChatId: "-1001",
+    topicId: 26,
+    topicName: "Topic archive",
+    topicLink: "https://t.me/c/1001/26",
+  });
+
+  await app.initialize();
+  await app.handleUpdate({
+    callback_query: {
+      id: "cb-topic-archive",
+      data: "topic:archive:session-topic-archive-1",
+      from: { id: TEST_USER_ID },
+      message: {
+        message_id: 26,
+        message_thread_id: 26,
+        chat: { id: -1001, type: "supergroup" },
+      },
+    },
+  });
+
+  const session = await store.getSession("session-topic-archive-1");
+  const answer = telegram.calls.answerCallbackQuery.at(-1);
+
+  assert.equal(session?.status, "closed");
+  assert.equal(telegram.calls.closeForumTopic.length, 1);
+  assert.equal(answer.options.text, "Session archived.");
+});
+
+test("When sessions are stale, then viewing sessions auto-archives open ones and prunes old archived ones", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const app = createTestApp({
+    store,
+    telegram,
+    now: () => "2026-04-20T12:00:00.000Z",
+    clock: () => Date.parse("2026-04-20T12:00:00.000Z"),
+    botConfigOverrides: {
+      sessionRetention: {
+        autoArchiveAfterMs: 7 * 24 * 60 * 60 * 1000,
+        autoPruneAfterMs: 30 * 24 * 60 * 60 * 1000,
+      },
+    },
+  });
+
+  await store.saveSession({
+    id: "session-stale-open",
+    label: "Stale open",
+    threadId: "thread-stale-open",
+    cwd: "/repo",
+    createdAt: "2026-04-01T10:00:00.000Z",
+    updatedAt: "2026-04-01T10:00:00.000Z",
+    status: "bound",
+    forumChatId: "-1001",
+    topicId: 31,
+    topicName: "Stale open",
+    topicLink: "https://t.me/c/1001/31",
+  });
+  await store.saveSession({
+    id: "session-stale-closed",
+    label: "Stale closed",
+    threadId: "thread-stale-closed",
+    cwd: "/repo",
+    createdAt: "2026-01-01T10:00:00.000Z",
+    updatedAt: "2026-01-01T10:00:00.000Z",
+    status: "closed",
+    forumChatId: "-1001",
+    topicId: 32,
+    topicName: "Stale closed",
+    topicLink: "https://t.me/c/1001/32",
+  });
+  await store.saveSession({
+    id: "session-fresh",
+    label: "Fresh",
+    threadId: "thread-fresh",
+    cwd: "/repo",
+    createdAt: "2026-04-18T10:00:00.000Z",
+    updatedAt: "2026-04-18T10:00:00.000Z",
+    status: "headless",
+  });
+
+  await app.initialize();
+  await app.handleUpdate({
+    message: {
+      text: "/sessions",
+      chat: { id: TEST_USER_ID, type: "private" },
+      from: { id: TEST_USER_ID },
+    },
+  });
+
+  const sessions = await store.listSessions({ includeClosed: true });
+  const openIds = sessions.filter((session) => session.status !== "closed").map((session) => session.id);
+  const closedIds = sessions.filter((session) => session.status === "closed").map((session) => session.id);
+
+  assert.deepEqual(openIds, ["session-fresh"]);
+  assert.deepEqual(closedIds, ["session-stale-open"]);
+  assert.equal(telegram.calls.closeForumTopic.length, 1);
+  assert.equal(telegram.calls.deleteForumTopic.length, 1);
 });
 
 test("When a topic message continues a bound session, then relay sends only the final reply and stores it", async () => {
@@ -534,13 +826,26 @@ async function createTempStore() {
   return new StateStore(path.join(tempDir, "state.json"));
 }
 
-function createTestApp({ store, telegram, runTurn, clock, hubServer = null }) {
+function createTestApp({
+  store,
+  telegram,
+  runTurn,
+  clock,
+  now = () => "2026-04-02T12:00:00.000Z",
+  hubServer = null,
+  botConfigOverrides = {},
+}) {
   return createRelayApp({
     botConfig: {
       authorizedUserIds: new Set([String(TEST_USER_ID)]),
       forumChatId: "-1001",
       pollTimeoutSeconds: 1,
       hostId: "mbp",
+      sessionRetention: {
+        autoArchiveAfterMs: 14 * 24 * 60 * 60 * 1000,
+        autoPruneAfterMs: 60 * 24 * 60 * 60 * 1000,
+      },
+      ...botConfigOverrides,
     },
     codexConfig: {
       defaultCwd: "/repo",
@@ -553,7 +858,7 @@ function createTestApp({ store, telegram, runTurn, clock, hubServer = null }) {
     runTurn,
     clock,
     hubServer,
-    now: () => "2026-04-02T12:00:00.000Z",
+    now,
     logger: {
       log() {},
       error() {},
@@ -566,9 +871,12 @@ function createFakeTelegram() {
   let nextMessageId = 1;
   const calls = {
     answerCallbackQuery: [],
+    closeForumTopic: [],
     createForumTopic: [],
+    deleteForumTopic: [],
     editMessage: [],
     replaceProgressMessage: [],
+    reopenForumTopic: [],
     sendChatAction: [],
     sendLongMessage: [],
     sendMessage: [],
@@ -599,6 +907,18 @@ function createFakeTelegram() {
         message_thread_id: 42,
         name,
       };
+    },
+    async closeForumTopic(chatId, topicId) {
+      calls.closeForumTopic.push({ chatId, topicId });
+      return true;
+    },
+    async deleteForumTopic(chatId, topicId) {
+      calls.deleteForumTopic.push({ chatId, topicId });
+      return true;
+    },
+    async reopenForumTopic(chatId, topicId) {
+      calls.reopenForumTopic.push({ chatId, topicId });
+      return true;
     },
     async sendChatAction(chatId, action, options = {}) {
       calls.sendChatAction.push({ chatId, action, options });

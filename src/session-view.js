@@ -11,6 +11,7 @@ export function dmHelpText({ userId, forumTitle }) {
     "",
     "New Session creates a fresh topic from Telegram.",
     "Sessions shows indexed local agent sessions.",
+    "Archived shows hidden historical sessions.",
     "Status shows forum and session counts.",
     "Chat ID shows your Telegram user id.",
   ].join("\n");
@@ -20,20 +21,21 @@ export function topicHelpText(session) {
   if (!session) {
     return [
       "This topic is not bound to a Codex session.",
-      "Open DM with the bot and use Sessions to bind one.",
+      "Use Sessions in General or DM to bind one.",
     ].join("\n");
   }
 
   return [
     `Session: ${session.label}`,
     "",
-    "Use the buttons below for status, latest reply, or detach.",
+    "Use the buttons below for status, latest reply, detach, or archive.",
     "Plain text continues the bound agent session.",
   ].join("\n");
 }
 
 export function formatDmStatus({ forumTitle, sessions }) {
   const openSessions = sessions.filter((session) => session.status !== "closed");
+  const archivedSessions = sessions.filter((session) => session.status === "closed");
   const boundCount = openSessions.filter((session) => session.status === "bound").length;
   const headlessCount = openSessions.filter((session) => session.status === "headless").length;
 
@@ -41,25 +43,36 @@ export function formatDmStatus({ forumTitle, sessions }) {
     "Relay status",
     `forum: ${forumTitle}`,
     `open_sessions: ${openSessions.length}`,
+    `archived_sessions: ${archivedSessions.length}`,
     `bound_sessions: ${boundCount}`,
     `headless_sessions: ${headlessCount}`,
   ].join("\n");
 }
 
-export function formatSessionsPanel({ forumTitle, sessions, limit = MAX_PANEL_SESSIONS }) {
+export function formatSessionsPanel({
+  forumTitle,
+  sessions,
+  limit = MAX_PANEL_SESSIONS,
+  mode = "open",
+}) {
   const visibleSessions = sessions.slice(0, limit);
   const lines = [
-    "Agent sessions",
+    mode === "archived" ? "Archived sessions" : "Agent sessions",
     "",
     `Forum: ${forumTitle}`,
+    "Sorted: newest update first",
     "",
   ];
 
   if (visibleSessions.length === 0) {
-    lines.push("No open sessions.");
+    lines.push(mode === "archived" ? "No archived sessions." : "No open sessions.");
     lines.push("");
-    lines.push("Use New Session to start one from Telegram.");
-    lines.push("Or run Codex locally and it will appear here after the next hook event.");
+    if (mode === "archived") {
+      lines.push("Archive sessions to hide them from the main list.");
+    } else {
+      lines.push("Use New Session to start one from Telegram.");
+      lines.push("Or run Codex locally and it will appear here after the next hook event.");
+    }
     return lines.join("\n");
   }
 
@@ -87,15 +100,22 @@ export function formatSessionsPanel({ forumTitle, sessions, limit = MAX_PANEL_SE
 export function buildSessionsKeyboard(
   sessions,
   {
+    mode = "open",
     bindSession = (session) => `session:create:${session.id}`,
     showSessionDetails = (session) => `session:details:${session.id}`,
     showLatestSessionReply = (session) => `session:latest:${session.id}`,
+    archiveSession = (session) => `session:archive:${session.id}`,
+    restoreSession = (session) => `session:restore:${session.id}`,
   } = {},
 ) {
   const inline_keyboard = sessions.slice(0, MAX_PANEL_SESSIONS).flatMap((session) => {
     const label = truncateLabel(session.label, 18);
-    const primaryButton =
-      session.status === "bound" && session.topicLink
+    const primaryButton = mode === "archived"
+      ? {
+          text: `Restore ${label}`,
+          callback_data: restoreSession(session),
+        }
+      : session.status === "bound" && session.topicLink
       ? {
           text: `Open ${label}`,
           url: session.topicLink,
@@ -111,10 +131,15 @@ export function buildSessionsKeyboard(
         text: "Details",
         callback_data: showSessionDetails(session),
       },
-      {
-        text: "Latest",
-        callback_data: showLatestSessionReply(session),
-      },
+      mode === "archived"
+        ? {
+            text: "Latest",
+            callback_data: showLatestSessionReply(session),
+          }
+        : {
+            text: "Archive",
+            callback_data: archiveSession(session),
+          },
     ]];
   });
 
@@ -123,12 +148,16 @@ export function buildSessionsKeyboard(
       text: "New Session",
       callback_data: "dm:new",
     },
+    {
+      text: mode === "archived" ? "Open Sessions" : "Archived",
+      callback_data: mode === "archived" ? "sessions:refresh" : "sessions:archived",
+    },
   ]);
 
   inline_keyboard.push([
     {
       text: "Refresh",
-      callback_data: "sessions:refresh",
+      callback_data: mode === "archived" ? "sessions:archived" : "sessions:refresh",
     },
     {
       text: "Status",
@@ -151,12 +180,19 @@ export function buildSessionDetailKeyboard(
   {
     bindSession = (item) => `session:create:${item.id}`,
     showLatestSessionReply = (item) => `session:latest:${item.id}`,
+    archiveSession = (item) => `session:archive:${item.id}`,
+    restoreSession = (item) => `session:restore:${item.id}`,
   } = {},
 ) {
   const inline_keyboard = [];
 
   inline_keyboard.push([
-    session.status === "bound" && session.topicLink
+    session.status === "closed"
+      ? {
+          text: "Restore",
+          callback_data: restoreSession(session),
+        }
+      : session.status === "bound" && session.topicLink
       ? {
           text: "Open Topic",
           url: session.topicLink,
@@ -172,20 +208,25 @@ export function buildSessionDetailKeyboard(
   ]);
 
   inline_keyboard.push([
+    session.status === "closed"
+      ? {
+          text: "Archived",
+          callback_data: "sessions:archived",
+        }
+      : {
+          text: "Archive",
+          callback_data: archiveSession(session),
+        },
     {
-      text: "New Session",
-      callback_data: "dm:new",
-    },
-    {
-      text: "Back to Sessions",
-      callback_data: "sessions:refresh",
+      text: session.status === "closed" ? "Open Sessions" : "Back to Sessions",
+      callback_data: session.status === "closed" ? "sessions:refresh" : "sessions:refresh",
     },
   ]);
 
   inline_keyboard.push([
     {
-      text: "Home",
-      callback_data: "dm:help",
+      text: "New Session",
+      callback_data: "dm:new",
     },
   ]);
 
@@ -207,15 +248,21 @@ export function buildDmHomeKeyboard() {
           callback_data: "dm:sessions",
         },
         {
-          text: "Status",
-          callback_data: "dm:status",
+          text: "Archived",
+          callback_data: "dm:archived",
         },
       ],
       [
         {
+          text: "Status",
+          callback_data: "dm:status",
+        },
+        {
           text: "Chat ID",
           callback_data: "dm:chatid",
         },
+      ],
+      [
         {
           text: "Help",
           callback_data: "dm:help",
@@ -231,6 +278,7 @@ export function buildTopicKeyboard(
     showTopicStatus = (item) => `topic:status:${item.id}`,
     showLatestTopicReply = (item) => `topic:latest:${item.id}`,
     detachTopicSession = (item) => `topic:reset:${item.id}`,
+    archiveTopicSession = (item) => `topic:archive:${item.id}`,
   } = {},
 ) {
   if (!session) {
@@ -263,6 +311,10 @@ export function buildTopicKeyboard(
           text: "Detach",
           callback_data: detachTopicSession(session),
         },
+        {
+          text: "Archive",
+          callback_data: archiveTopicSession(session),
+        },
       ],
     ],
   };
@@ -279,7 +331,7 @@ export function formatTopicBootstrap(session, topicLink) {
     session.threadId
       ? `Back on computer: codex resume ${session.threadId}`
       : "Send the first prompt here to start the session.",
-    "Buttons below handle status, latest reply, and detach.",
+    "Buttons below handle status, latest reply, detach, and archive.",
     "",
     `Topic link: ${topicLink}`,
   ];

@@ -23,6 +23,7 @@ const STREAM_EDIT_THROTTLE_MS = 900;
 const MAX_REASONING_CHARS = 700;
 const MAX_COMMAND_OUTPUT_CHARS = 1000;
 const MAX_DRAFT_REPLY_CHARS = 2200;
+const RETENTION_SWEEP_INTERVAL_MS = 60_000;
 
 export function createRelayApp({
   botConfig,
@@ -43,6 +44,7 @@ export function createRelayApp({
   let offset = 0;
   let botUsername = "";
   let forumChat = null;
+  let lastRetentionSweepAt = 0;
 
   async function initialize() {
     const me = await telegram.getMe();
@@ -61,6 +63,8 @@ export function createRelayApp({
         `TELEGRAM_FORUM_CHAT_ID is not a forum-enabled supergroup: ${botConfig.forumChatId}`,
       );
     }
+
+    await maybeApplySessionRetention(true);
 
     return {
       botUsername,
@@ -160,6 +164,11 @@ export function createRelayApp({
       return;
     }
 
+    if (isCommand(text, "archived", botUsername)) {
+      await renderArchivedSessionsPanel(chatId);
+      return;
+    }
+
     if (isCommand(text, "new", botUsername)) {
       await renderHostPicker(chatId);
       return;
@@ -182,15 +191,16 @@ export function createRelayApp({
       return;
     }
 
-    const topicId = message.message_thread_id;
-
-    if (!topicId) {
-      return;
-    }
-
     const text = message.text.trim();
 
     if (!text) {
+      return;
+    }
+
+    const topicId = message.message_thread_id;
+
+    if (isGeneralTopicId(topicId)) {
+      await handleGeneralForumMessage(message);
       return;
     }
 
@@ -209,7 +219,7 @@ export function createRelayApp({
         forumChat.id,
         session
           ? formatSessionDetails(session)
-          : "No Codex session is bound to this topic. Use DM /sessions to create or bind one.",
+          : "No Codex session is bound to this topic. Use Sessions in General or DM to create or bind one.",
         {
           message_thread_id: topicId,
           reply_markup: buildTopicKeyboard(session, topicKeyboardActions()),
@@ -222,7 +232,7 @@ export function createRelayApp({
       if (!session) {
         await telegram.sendMessage(
           forumChat.id,
-          "No Codex session is bound to this topic. Use DM /sessions to create or bind one.",
+          "No Codex session is bound to this topic. Use Sessions in General or DM to create or bind one.",
           { message_thread_id: topicId },
         );
         return;
@@ -248,7 +258,7 @@ export function createRelayApp({
       await store.detachSession(session.id);
       await telegram.sendMessage(
         forumChat.id,
-        "Session detached from this topic. It is headless again and can be rebound from DM /sessions.",
+        "Session detached from this topic. It is headless again and can be rebound from Sessions in General or DM.",
         {
           message_thread_id: topicId,
           reply_markup: buildTopicKeyboard(null, topicKeyboardActions()),
@@ -257,10 +267,29 @@ export function createRelayApp({
       return;
     }
 
+    if (isCommand(text, "archive", botUsername)) {
+      if (!session) {
+        await telegram.sendMessage(
+          forumChat.id,
+          "No Codex session is bound to this topic.",
+          { message_thread_id: topicId },
+        );
+        return;
+      }
+
+      await archiveSession(session.id);
+      await telegram.sendMessage(
+        forumChat.id,
+        "Session archived. Restore it from Sessions or Archived.",
+        { message_thread_id: topicId },
+      );
+      return;
+    }
+
     if (!session) {
       await telegram.sendMessage(
         forumChat.id,
-        "No Codex session is bound to this topic. Use DM /sessions to create or bind one.",
+        "No Codex session is bound to this topic. Use Sessions in General or DM to create or bind one.",
         { message_thread_id: topicId },
       );
       return;
@@ -286,6 +315,42 @@ export function createRelayApp({
     );
   }
 
+  async function handleGeneralForumMessage(message) {
+    const chatId = String(message.chat.id);
+    const userId = String(message.from.id);
+    const text = message.text.trim();
+
+    if (isCommand(text, "start", botUsername) || isCommand(text, "help", botUsername)) {
+      await renderDmHome(chatId, null, { userId });
+      return;
+    }
+
+    if (isCommand(text, "chatid", botUsername)) {
+      await telegram.sendMessage(chatId, `user_id: ${userId}`);
+      return;
+    }
+
+    if (isCommand(text, "sessions", botUsername)) {
+      await renderSessionsPanel(chatId);
+      return;
+    }
+
+    if (isCommand(text, "archived", botUsername)) {
+      await renderArchivedSessionsPanel(chatId);
+      return;
+    }
+
+    if (isCommand(text, "new", botUsername)) {
+      await renderHostPicker(chatId);
+      return;
+    }
+
+    if (isCommand(text, "status", botUsername)) {
+      await renderDmStatus(chatId);
+      return;
+    }
+  }
+
   async function handleCallbackQuery(query) {
     if (!query.data || !query.from?.id || !query.message?.chat?.id) {
       return;
@@ -307,179 +372,220 @@ export function createRelayApp({
     const messageId = query.message.message_id;
     const topicId = query.message.message_thread_id;
 
-    if (query.message.chat.type === "private") {
-      if (query.data === "dm:new") {
-        await renderHostPicker(chatId, messageId);
-        await telegram.answerCallbackQuery(query.id, {
-          text: "Choose a node.",
-        });
-        return;
-      }
-
-      if (query.data === "dm:help") {
-        await renderDmHome(chatId, messageId);
-        await telegram.answerCallbackQuery(query.id, {
-          text: "Help loaded.",
-        });
-        return;
-      }
-
-      if (query.data === "dm:chatid") {
-        await telegram.answerCallbackQuery(query.id, {
-          text: `user_id: ${userId}`,
-          show_alert: true,
-        });
-        return;
-      }
-
-      if (query.data === "dm:status") {
-        await renderDmStatus(chatId, messageId);
-        await telegram.answerCallbackQuery(query.id, {
-          text: "Status loaded.",
-        });
-        return;
-      }
-
-      if (query.data === "dm:sessions") {
-        await renderSessionsPanel(chatId, messageId);
-        await telegram.answerCallbackQuery(query.id, {
-          text: "Sessions loaded.",
-        });
-        return;
-      }
-
-      if (query.data.startsWith("new:host:")) {
-        const hostId = query.data.slice("new:host:".length);
-        await renderRootPicker(chatId, messageId, hostId);
-        await telegram.answerCallbackQuery(query.id, {
-          text: "Choose a starting place.",
-        });
-        return;
-      }
-
-      if (query.data.startsWith("new:roots:")) {
-        const hostId = query.data.slice("new:roots:".length);
-        await renderRootPicker(chatId, messageId, hostId);
-        await telegram.answerCallbackQuery(query.id, {
-          text: "Choose a starting place.",
-        });
-        return;
-      }
-
-      if (query.data.startsWith("new:browse:")) {
-        const token = query.data.slice("new:browse:".length);
-        const context = uiTokens.get(token);
-
-        if (!context) {
-          await telegram.answerCallbackQuery(query.id, {
-            text: "Directory view expired. Start again.",
-            show_alert: true,
-          });
-          return;
-        }
-
-        try {
-          await renderDirectoryPicker(chatId, messageId, context);
-          await telegram.answerCallbackQuery(query.id, {
-            text: "Directory loaded.",
-          });
-        } catch (error) {
-          await telegram.answerCallbackQuery(query.id, {
-            text: error.message,
-            show_alert: true,
-          });
-        }
-        return;
-      }
-
-      if (query.data.startsWith("new:use:")) {
-        const token = query.data.slice("new:use:".length);
-        const context = uiTokens.get(token);
-
-        if (!context) {
-          await telegram.answerCallbackQuery(query.id, {
-            text: "Directory selection expired. Start again.",
-            show_alert: true,
-          });
-          return;
-        }
-
-        try {
-          await createSessionFromDirectory(chatId, messageId, query.id, context);
-        } catch (error) {
-          await telegram.answerCallbackQuery(query.id, {
-            text: error.message,
-            show_alert: true,
-          });
-        }
-        return;
-      }
-
-      if (query.data.startsWith("session:ui:")) {
-        const token = query.data.slice("session:ui:".length);
-        const context = uiTokens.get(token);
-
-        if (!context || context.kind !== "session-action") {
-          await telegram.answerCallbackQuery(query.id, {
-            text: "Session controls expired. Refresh Sessions.",
-            show_alert: true,
-          });
-          return;
-        }
-
-        if (context.action === "details") {
-          await renderSessionDetails(chatId, messageId, context.sessionId);
-          await telegram.answerCallbackQuery(query.id, {
-            text: "Session details loaded.",
-          });
-          return;
-        }
-
-        if (context.action === "latest") {
-          const session = await store.getSession(context.sessionId);
-
-          if (!session || session.status === "closed") {
-            await telegram.answerCallbackQuery(query.id, {
-              text: "Session not found.",
-              show_alert: true,
-            });
-            return;
-          }
-
-          await sendLatestReply(chatId, session);
-          await telegram.answerCallbackQuery(query.id, {
-            text: "Latest reply sent.",
-          });
-          return;
-        }
-
-        if (context.action === "create") {
-          await createTopicForSession(context.sessionId, {
-            controlChatId: chatId,
-            panelMessageId: messageId,
-            callbackQueryId: query.id,
-          });
-          return;
-        }
-      }
-    }
-
     if (String(query.message.chat.id) === String(forumChat.id)) {
+      if (isGeneralTopicId(topicId)) {
+        await handleControlCallbackQuery(query, { chatId, messageId, userId });
+        return;
+      }
+
       await handleTopicCallbackQuery(query, topicId);
       return;
     }
 
     if (query.message.chat.type !== "private") {
       await telegram.answerCallbackQuery(query.id, {
-        text: "Use DM controls for session management.",
+        text: "Use General or DM for session management.",
       });
       return;
+    }
+
+    await handleControlCallbackQuery(query, { chatId, messageId, userId });
+  }
+
+  async function handleControlCallbackQuery(query, { chatId, messageId, userId }) {
+    if (query.data === "dm:new") {
+      await renderHostPicker(chatId, messageId);
+      await telegram.answerCallbackQuery(query.id, {
+        text: "Choose a node.",
+      });
+      return;
+    }
+
+    if (query.data === "dm:help") {
+      await renderDmHome(chatId, messageId, { userId });
+      await telegram.answerCallbackQuery(query.id, {
+        text: "Help loaded.",
+      });
+      return;
+    }
+
+    if (query.data === "dm:chatid") {
+      await telegram.answerCallbackQuery(query.id, {
+        text: `user_id: ${userId}`,
+        show_alert: true,
+      });
+      return;
+    }
+
+    if (query.data === "dm:status") {
+      await renderDmStatus(chatId, messageId);
+      await telegram.answerCallbackQuery(query.id, {
+        text: "Status loaded.",
+      });
+      return;
+    }
+
+    if (query.data === "dm:sessions") {
+      await renderSessionsPanel(chatId, messageId);
+      await telegram.answerCallbackQuery(query.id, {
+        text: "Sessions loaded.",
+      });
+      return;
+    }
+
+    if (query.data === "dm:archived") {
+      await renderArchivedSessionsPanel(chatId, messageId);
+      await telegram.answerCallbackQuery(query.id, {
+        text: "Archived sessions loaded.",
+      });
+      return;
+    }
+
+    if (query.data.startsWith("new:host:")) {
+      const hostId = query.data.slice("new:host:".length);
+      await renderRootPicker(chatId, messageId, hostId);
+      await telegram.answerCallbackQuery(query.id, {
+        text: "Choose a starting place.",
+      });
+      return;
+    }
+
+    if (query.data.startsWith("new:roots:")) {
+      const hostId = query.data.slice("new:roots:".length);
+      await renderRootPicker(chatId, messageId, hostId);
+      await telegram.answerCallbackQuery(query.id, {
+        text: "Choose a starting place.",
+      });
+      return;
+    }
+
+    if (query.data.startsWith("new:browse:")) {
+      const token = query.data.slice("new:browse:".length);
+      const context = uiTokens.get(token);
+
+      if (!context) {
+        await telegram.answerCallbackQuery(query.id, {
+          text: "Directory view expired. Start again.",
+          show_alert: true,
+        });
+        return;
+      }
+
+      try {
+        await renderDirectoryPicker(chatId, messageId, context);
+        await telegram.answerCallbackQuery(query.id, {
+          text: "Directory loaded.",
+        });
+      } catch (error) {
+        await telegram.answerCallbackQuery(query.id, {
+          text: error.message,
+          show_alert: true,
+        });
+      }
+      return;
+    }
+
+    if (query.data.startsWith("new:use:")) {
+      const token = query.data.slice("new:use:".length);
+      const context = uiTokens.get(token);
+
+      if (!context) {
+        await telegram.answerCallbackQuery(query.id, {
+          text: "Directory selection expired. Start again.",
+          show_alert: true,
+        });
+        return;
+      }
+
+      try {
+        await createSessionFromDirectory(chatId, messageId, query.id, context);
+      } catch (error) {
+        await telegram.answerCallbackQuery(query.id, {
+          text: error.message,
+          show_alert: true,
+        });
+      }
+      return;
+    }
+
+    if (query.data.startsWith("session:ui:")) {
+      const token = query.data.slice("session:ui:".length);
+      const context = uiTokens.get(token);
+
+      if (!context || context.kind !== "session-action") {
+        await telegram.answerCallbackQuery(query.id, {
+          text: "Session controls expired. Refresh Sessions.",
+          show_alert: true,
+        });
+        return;
+      }
+
+      if (context.action === "details") {
+        await renderSessionDetails(chatId, messageId, context.sessionId);
+        await telegram.answerCallbackQuery(query.id, {
+          text: "Session details loaded.",
+        });
+        return;
+      }
+
+      if (context.action === "latest") {
+        const session = await store.getSession(context.sessionId);
+
+        if (!session) {
+          await telegram.answerCallbackQuery(query.id, {
+            text: "Session not found.",
+            show_alert: true,
+          });
+          return;
+        }
+
+        await sendLatestReply(chatId, session);
+        await telegram.answerCallbackQuery(query.id, {
+          text: "Latest reply sent.",
+        });
+        return;
+      }
+
+      if (context.action === "create") {
+        await createTopicForSession(context.sessionId, {
+          controlChatId: chatId,
+          panelMessageId: messageId,
+          callbackQueryId: query.id,
+        });
+        return;
+      }
+
+      if (context.action === "archive") {
+        await archiveSession(context.sessionId);
+        await renderSessionsPanel(chatId, messageId);
+        await telegram.answerCallbackQuery(query.id, {
+          text: "Session archived.",
+        });
+        return;
+      }
+
+      if (context.action === "restore") {
+        await restoreSession(context.sessionId);
+        await renderSessionDetails(chatId, messageId, context.sessionId);
+        await telegram.answerCallbackQuery(query.id, {
+          text: "Session restored.",
+        });
+        return;
+      }
     }
 
     if (query.data === "sessions:refresh") {
       await renderSessionsPanel(chatId, messageId);
       await telegram.answerCallbackQuery(query.id, {
         text: "Session list refreshed.",
+      });
+      return;
+    }
+
+    if (query.data === "sessions:archived") {
+      await renderArchivedSessionsPanel(chatId, messageId);
+      await telegram.answerCallbackQuery(query.id, {
+        text: "Archived sessions loaded.",
       });
       return;
     }
@@ -525,7 +631,7 @@ export function createRelayApp({
   async function handleTopicCallbackQuery(query, topicId) {
     if (query.data === "topic:unbound") {
       await telegram.answerCallbackQuery(query.id, {
-        text: "Open DM with the bot, then tap Sessions.",
+        text: "Open General or DM, then tap Sessions.",
         show_alert: true,
       });
       return;
@@ -558,7 +664,7 @@ export function createRelayApp({
           forumChat.id,
           session
             ? formatSessionDetails(session)
-            : "No Codex session is bound to this topic. Use DM Sessions to bind one.",
+            : "No Codex session is bound to this topic. Use Sessions in General or DM to bind one.",
           {
             message_thread_id: topicId,
             reply_markup: buildTopicKeyboard(session, topicKeyboardActions()),
@@ -601,7 +707,7 @@ export function createRelayApp({
         await store.detachSession(session.id);
         await telegram.sendMessage(
           forumChat.id,
-          "Session detached from this topic. It is headless again and can be rebound from DM Sessions.",
+          "Session detached from this topic. It is headless again and can be rebound from Sessions in General or DM.",
           {
             message_thread_id: topicId,
             reply_markup: buildTopicKeyboard(null, topicKeyboardActions()),
@@ -612,6 +718,22 @@ export function createRelayApp({
         });
         return;
       }
+
+      if (context.action === "archive") {
+        if (!session) {
+          await telegram.answerCallbackQuery(query.id, {
+            text: "No session bound.",
+            show_alert: true,
+          });
+          return;
+        }
+
+        await archiveSession(session.id);
+        await telegram.answerCallbackQuery(query.id, {
+          text: "Session archived.",
+        });
+        return;
+      }
     }
 
     if (query.data.startsWith("topic:status:")) {
@@ -619,7 +741,7 @@ export function createRelayApp({
         forumChat.id,
         session
           ? formatSessionDetails(session)
-          : "No Codex session is bound to this topic. Use DM Sessions to bind one.",
+          : "No Codex session is bound to this topic. Use Sessions in General or DM to bind one.",
         {
           message_thread_id: topicId,
           reply_markup: buildTopicKeyboard(session, topicKeyboardActions()),
@@ -662,7 +784,7 @@ export function createRelayApp({
       await store.detachSession(session.id);
       await telegram.sendMessage(
         forumChat.id,
-        "Session detached from this topic. It is headless again and can be rebound from DM Sessions.",
+        "Session detached from this topic. It is headless again and can be rebound from Sessions in General or DM.",
         {
           message_thread_id: topicId,
           reply_markup: buildTopicKeyboard(null, topicKeyboardActions()),
@@ -672,9 +794,25 @@ export function createRelayApp({
         text: "Session detached.",
       });
     }
+
+    if (query.data.startsWith("topic:archive:")) {
+      if (!session) {
+        await telegram.answerCallbackQuery(query.id, {
+          text: "No session bound.",
+          show_alert: true,
+        });
+        return;
+      }
+
+      await archiveSession(session.id);
+      await telegram.answerCallbackQuery(query.id, {
+        text: "Session archived.",
+      });
+    }
   }
 
   async function renderSessionsPanel(chatId, messageId = null) {
+    await maybeApplySessionRetention();
     const sessions = (await store.listSessions()).slice(0, MAX_PANEL_SESSIONS);
     const text = formatSessionsPanel({
       forumTitle: forumChat.title || String(forumChat.id),
@@ -693,12 +831,38 @@ export function createRelayApp({
     });
   }
 
-  async function renderDmHome(chatId, messageId = null) {
+  async function renderArchivedSessionsPanel(chatId, messageId = null) {
+    await maybeApplySessionRetention();
+    const sessions = (await store.listSessions({ includeClosed: true }))
+      .filter((session) => session.status === "closed")
+      .slice(0, MAX_PANEL_SESSIONS);
+    const text = formatSessionsPanel({
+      forumTitle: forumChat.title || String(forumChat.id),
+      sessions,
+      mode: "archived",
+    });
+    const replyMarkup = buildSessionsKeyboard(sessions, {
+      ...sessionKeyboardActions(),
+      mode: "archived",
+    });
+
+    if (!messageId) {
+      return telegram.sendMessage(chatId, text, {
+        reply_markup: replyMarkup,
+      });
+    }
+
+    return editOrSend(chatId, messageId, text, {
+      reply_markup: replyMarkup,
+    });
+  }
+
+  async function renderDmHome(chatId, messageId = null, { userId = chatId } = {}) {
     return editOrSend(
       chatId,
       messageId,
       dmHelpText({
-        userId: chatId,
+        userId,
         forumTitle: forumChat.title || String(forumChat.id),
       }),
       {
@@ -900,7 +1064,8 @@ export function createRelayApp({
   }
 
   async function renderDmStatus(chatId, messageId = null) {
-    const sessions = await store.listSessions();
+    await maybeApplySessionRetention();
+    const sessions = await store.listSessions({ includeClosed: true });
     return editOrSend(
       chatId,
       messageId,
@@ -917,7 +1082,7 @@ export function createRelayApp({
   async function renderSessionDetails(chatId, messageId, sessionId) {
     const session = await store.getSession(sessionId);
 
-    if (!session || session.status === "closed") {
+    if (!session) {
       return editOrSend(chatId, messageId, "Session not found.");
     }
 
@@ -1192,6 +1357,8 @@ export function createRelayApp({
       bindSession: (session) => issueSessionActionToken("create", session.id),
       showSessionDetails: (session) => issueSessionActionToken("details", session.id),
       showLatestSessionReply: (session) => issueSessionActionToken("latest", session.id),
+      archiveSession: (session) => issueSessionActionToken("archive", session.id),
+      restoreSession: (session) => issueSessionActionToken("restore", session.id),
     };
   }
 
@@ -1200,7 +1367,126 @@ export function createRelayApp({
       showTopicStatus: (session) => issueTopicActionToken("status", session.id),
       showLatestTopicReply: (session) => issueTopicActionToken("latest", session.id),
       detachTopicSession: (session) => issueTopicActionToken("reset", session.id),
+      archiveTopicSession: (session) => issueTopicActionToken("archive", session.id),
     };
+  }
+
+  async function archiveSession(sessionId, { touchUpdatedAt = true } = {}) {
+    const session = await store.getSession(sessionId);
+
+    if (!session || session.status === "closed") {
+      return session;
+    }
+
+    const archived = await store.updateSession(session.id, {
+      status: "closed",
+      updatedAt: touchUpdatedAt ? now() : session.updatedAt,
+    });
+
+    if (session.forumChatId && session.topicId) {
+      try {
+        await telegram.closeForumTopic(session.forumChatId, session.topicId);
+      } catch (error) {
+        logger.error(error);
+      }
+    }
+
+    return archived;
+  }
+
+  async function restoreSession(sessionId) {
+    const session = await store.getSession(sessionId);
+
+    if (!session || session.status !== "closed") {
+      return session;
+    }
+
+    const nextStatus = session.forumChatId && session.topicId ? "bound" : "headless";
+    const restored = await store.updateSession(session.id, {
+      status: nextStatus,
+      updatedAt: now(),
+    });
+
+    if (nextStatus === "bound") {
+      try {
+        await telegram.reopenForumTopic(session.forumChatId, session.topicId);
+      } catch (error) {
+        logger.error(error);
+      }
+    }
+
+    return restored;
+  }
+
+  async function maybeApplySessionRetention(force = false) {
+    const autoArchiveAfterMs = botConfig.sessionRetention?.autoArchiveAfterMs || 0;
+    const autoPruneAfterMs = botConfig.sessionRetention?.autoPruneAfterMs || 0;
+
+    if (!autoArchiveAfterMs && !autoPruneAfterMs) {
+      return;
+    }
+
+    if (!force && clock() - lastRetentionSweepAt < RETENTION_SWEEP_INTERVAL_MS) {
+      return;
+    }
+
+    lastRetentionSweepAt = clock();
+
+    const sessions = await store.listSessions({ includeClosed: true });
+    let archivedCount = 0;
+    let prunedCount = 0;
+
+    for (const session of sessions) {
+      if (session.isBusy) {
+        continue;
+      }
+
+      const updatedAtMs = Date.parse(session.updatedAt || session.createdAt || "");
+
+      if (Number.isNaN(updatedAtMs)) {
+        continue;
+      }
+
+      const ageMs = clock() - updatedAtMs;
+      const pendingJobs = await store.listJobsForSession(session.id, {
+        statuses: ["queued", "running"],
+      });
+
+      if (pendingJobs.length > 0) {
+        continue;
+      }
+
+      if (session.status === "closed") {
+        if (autoPruneAfterMs && ageMs >= autoPruneAfterMs) {
+          await pruneSession(session);
+          prunedCount += 1;
+        }
+        continue;
+      }
+
+      if (autoArchiveAfterMs && ageMs >= autoArchiveAfterMs) {
+        await archiveSession(session.id, {
+          touchUpdatedAt: false,
+        });
+        archivedCount += 1;
+      }
+    }
+
+    if (archivedCount > 0 || prunedCount > 0) {
+      logger.log(`session retention archived=${archivedCount} pruned=${prunedCount}`);
+    }
+  }
+
+  async function pruneSession(session) {
+    if (session.forumChatId && session.topicId && !isGeneralTopicId(session.topicId)) {
+      try {
+        await telegram.deleteForumTopic(session.forumChatId, session.topicId);
+      } catch (error) {
+        logger.error(error);
+      }
+    }
+
+    await store.deleteSession(session.id);
   }
 
   async function countPendingTurns(session) {
@@ -1454,9 +1740,13 @@ async function listLocalDirectories(directoryPath, rootPath, allowedRoots) {
     .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
 }
 
-function isInsideRoot(targetPath, rootPath) {
-  return targetPath === rootPath || targetPath.startsWith(`${rootPath}${path.sep}`);
-}
+  function isInsideRoot(targetPath, rootPath) {
+    return targetPath === rootPath || targetPath.startsWith(`${rootPath}${path.sep}`);
+  }
+
+  function isGeneralTopicId(topicId) {
+    return topicId === undefined || topicId === null || Number(topicId) === 1;
+  }
 
 function formatHostButtonLabel(host) {
   const primary = host.label || host.id;

@@ -5,7 +5,8 @@ Run coding agents on your machine as usual. Global Codex hooks index sessions lo
 ## Model
 
 - Local Codex sessions are indexed by global hooks.
-- Telegram DM is the control plane.
+- Telegram General topic is the main control plane.
+- Telegram DM remains available as fallback control.
 - A Telegram forum topic is the work surface for one Codex session.
 - Sessions stay headless until you bind one from `/sessions`.
 - Sessions are owned by one `host_id`, so one bot can route work to multiple computers.
@@ -147,16 +148,22 @@ After the next hook event, that session appears in Telegram `/sessions` with its
 
 ## Telegram UX
 
-- DM is button-first: `Sessions`, `Status`, `Help`
-- DM also supports `New Session`: choose node, choose place, browse subdirectories, then open a fresh topic
+- General topic is button-first: `New Session`, `Sessions`, `Archived`, `Status`, `Help`
+- DM exposes the same management flow as fallback
+- `New Session` lets you choose node, place, and folder, then opens a fresh topic
 - Topic messages are still plain text prompts
-- Topic control messages include buttons for `Status`, `Latest`, and `Detach`
-- Slash commands still work, but the normal flow should not require typing them
+- Topic control messages include buttons for `Status`, `Latest`, `Detach`, and `Archive`
+- Telegram now posts only the final reply for each turn
+- Session lists are sorted by newest `updatedAt` first
+- Slash commands still work, but normal use should not require typing them
 
 ## Codex defaults
 
 - `CODEX_DEFAULT_ARGS` defaults to `--yolo`
 - If you keep `--yolo`, Agent Tether will not also add explicit approval/sandbox config flags on top
+- `RELAY_AUTO_ARCHIVE_AFTER_DAYS` defaults to `14`
+- `RELAY_AUTO_PRUNE_AFTER_DAYS` defaults to `60`
+- Set either one to `0` to disable that retention step
 
 Optional fallback: start a headless non-interactive Codex session from the computer:
 
@@ -178,17 +185,25 @@ npm run start-session -- --label "docs cleanup" --notify-chat 123456789 --prompt
 
 ## Telegram usage
 
-### DM control plane
+### General or DM control plane
 
 - `/start` or `/help`
 - `/chatid`
 - `/sessions`
+- `/archived`
+- `/new`
 - `/status`
 
 `/sessions` shows indexed sessions with buttons:
 
 - `Bind ...` for headless sessions
 - `Open ...` for already bound sessions
+- `Details`
+- `Archive`
+
+`/archived` shows hidden sessions with:
+
+- `Restore`
 - `Details`
 - `Latest`
 
@@ -197,10 +212,11 @@ npm run start-session -- --label "docs cleanup" --notify-chat 123456789 --prompt
 Inside a bound forum topic:
 
 - plain text continues the Codex session
-- partial Codex progress streams into the topic while the turn runs
+- Telegram sends the final reply after the turn completes
 - `/status` shows session details
 - `/latest` resends the latest assistant reply
 - `/reset` detaches the topic and returns the session to headless mode
+- `/archive` hides the session from the main list and closes the topic
 
 Back on the computer, resume the same session with:
 
@@ -213,6 +229,14 @@ codex resume <session_id>
 
 ```bash
 npm test
+```
+
+## Smoke check
+
+Run a quick operator smoke check against the configured hub, worker heartbeats, forum, and bot command sync:
+
+```bash
+npm run smoke
 ```
 
 ## Before Open Sourcing
