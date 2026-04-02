@@ -165,3 +165,42 @@ test("When hosts heartbeat, then the newest hosts are listed with their browse r
   assert.deepEqual(hosts[0]?.roots, [TEST_REPOS_ROOT]);
   assert.equal(hosts[1]?.id, "mbp");
 });
+
+test("When concurrent writes hit the store, then all updates persist without temp-file races", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-store-"));
+  const store = new StateStore(path.join(tempDir, "state.json"));
+
+  await Promise.all([
+    store.upsertHost("mbp", {
+      label: "MacBook",
+      roots: [TEST_REPOS_ROOT],
+      lastSeenAt: "2026-04-02T10:00:00.000Z",
+    }),
+    store.saveSession({
+      id: "session-5",
+      label: "Concurrent",
+      cwd: "/repo",
+      createdAt: "2026-04-02T10:00:00.000Z",
+      updatedAt: "2026-04-02T10:00:00.000Z",
+    }),
+    store.createJob({
+      id: "job-2",
+      sessionId: "session-5",
+      hostId: "mbp",
+      prompt: "hello",
+      status: "queued",
+      createdAt: "2026-04-02T10:00:00.000Z",
+      updatedAt: "2026-04-02T10:00:00.000Z",
+    }),
+  ]);
+
+  const [hosts, session, job] = await Promise.all([
+    store.listHosts(),
+    store.getSession("session-5"),
+    store.getJob("job-2"),
+  ]);
+
+  assert.equal(hosts[0]?.id, "mbp");
+  assert.equal(session?.id, "session-5");
+  assert.equal(job?.id, "job-2");
+});

@@ -11,9 +11,288 @@ const EMPTY_STATE = {
 export class StateStore {
   constructor(filePath) {
     this.filePath = filePath;
+    this.pendingOperation = Promise.resolve();
   }
 
   async read() {
+    return this.runExclusive(() => this.readFromDisk());
+  }
+
+  async write(state) {
+    return this.runExclusive(() => this.writeToDisk(state));
+  }
+
+  async listSessions({ includeClosed = false } = {}) {
+    return this.runExclusive(async () => {
+      const state = await this.readFromDisk();
+      return Object.values(state.sessions)
+        .filter((session) => includeClosed || session.status !== "closed")
+        .sort(compareSessions);
+    });
+  }
+
+  async getSession(sessionId) {
+    return this.runExclusive(async () => {
+      const state = await this.readFromDisk();
+      return state.sessions[sessionId] || null;
+    });
+  }
+
+  async saveSession(session) {
+    return this.runExclusive(async () => {
+      const state = await this.readFromDisk();
+      const normalized = normalizeSession(session);
+      state.sessions[normalized.id] = normalized;
+      syncBindingsForSession(state, normalized);
+      await this.writeToDisk(state);
+      return normalized;
+    });
+  }
+
+  async upsertSession(sessionId, updates, defaults = {}) {
+    return this.runExclusive(async () => {
+      const state = await this.readFromDisk();
+      const existing = state.sessions[sessionId];
+      const next = normalizeSession({
+        ...defaults,
+        ...existing,
+        ...updates,
+        id: sessionId,
+      });
+
+      state.sessions[sessionId] = next;
+      syncBindingsForSession(state, next);
+      await this.writeToDisk(state);
+      return next;
+    });
+  }
+
+  async updateSession(sessionId, updates) {
+    return this.runExclusive(async () => {
+      const state = await this.readFromDisk();
+      const existing = state.sessions[sessionId];
+
+      if (!existing) {
+        return null;
+      }
+
+      const next = normalizeSession({
+        ...existing,
+        ...updates,
+      });
+
+      state.sessions[sessionId] = next;
+      syncBindingsForSession(state, next);
+      await this.writeToDisk(state);
+      return next;
+    });
+  }
+
+  async bindSession(sessionId, binding) {
+    return this.runExclusive(async () => {
+      const state = await this.readFromDisk();
+      const existing = state.sessions[sessionId];
+
+      if (!existing) {
+        return null;
+      }
+
+      const next = normalizeSession({
+        ...existing,
+        forumChatId: String(binding.forumChatId),
+        topicId: Number(binding.topicId),
+        topicName: binding.topicName || existing.topicName || "",
+        topicLink: binding.topicLink || existing.topicLink || "",
+        bootstrapMessageId: binding.bootstrapMessageId || existing.bootstrapMessageId || null,
+        status: "bound",
+        updatedAt: binding.updatedAt || new Date().toISOString(),
+      });
+
+      state.sessions[sessionId] = next;
+      syncBindingsForSession(state, next);
+      await this.writeToDisk(state);
+      return next;
+    });
+  }
+
+  async detachSession(sessionId, { status = "headless" } = {}) {
+    return this.runExclusive(async () => {
+      const state = await this.readFromDisk();
+      const existing = state.sessions[sessionId];
+
+      if (!existing) {
+        return null;
+      }
+
+      const next = normalizeSession({
+        ...existing,
+        forumChatId: "",
+        topicId: null,
+        topicName: "",
+        topicLink: "",
+        bootstrapMessageId: null,
+        status,
+        updatedAt: new Date().toISOString(),
+      });
+
+      state.sessions[sessionId] = next;
+      syncBindingsForSession(state, next);
+      await this.writeToDisk(state);
+      return next;
+    });
+  }
+
+  async getSessionByTopic(forumChatId, topicId) {
+    return this.runExclusive(async () => {
+      const state = await this.readFromDisk();
+      const sessionId = state.topicBindings[buildTopicKey(forumChatId, topicId)];
+      if (!sessionId) {
+        return null;
+      }
+
+      return state.sessions[sessionId] || null;
+    });
+  }
+
+  async listHosts() {
+    return this.runExclusive(async () => {
+      const state = await this.readFromDisk();
+      return Object.values(state.hosts).sort(compareHosts);
+    });
+  }
+
+  async getHost(hostId) {
+    return this.runExclusive(async () => {
+      const state = await this.readFromDisk();
+      return state.hosts[String(hostId)] || null;
+    });
+  }
+
+  async upsertHost(hostId, updates) {
+    return this.runExclusive(async () => {
+      const state = await this.readFromDisk();
+      const existing = state.hosts[String(hostId)] || {};
+      const next = normalizeHost({
+        ...existing,
+        ...updates,
+        id: hostId,
+      });
+
+      state.hosts[next.id] = next;
+      await this.writeToDisk(state);
+      return next;
+    });
+  }
+
+  async listJobsForSession(sessionId, { statuses = [] } = {}) {
+    return this.runExclusive(async () => {
+      const state = await this.readFromDisk();
+      const allowedStatuses = new Set(statuses.map((status) => String(status)));
+
+      return Object.values(state.jobs)
+        .filter((job) => {
+          if (job.sessionId !== String(sessionId)) {
+            return false;
+          }
+
+          if (allowedStatuses.size === 0) {
+            return true;
+          }
+
+          return allowedStatuses.has(job.status);
+        })
+        .sort(compareJobs);
+    });
+  }
+
+  async createJob(job) {
+    return this.runExclusive(async () => {
+      const state = await this.readFromDisk();
+      const normalized = normalizeJob(job);
+      state.jobs[normalized.id] = normalized;
+      await this.writeToDisk(state);
+      return normalized;
+    });
+  }
+
+  async getJob(jobId) {
+    return this.runExclusive(async () => {
+      const state = await this.readFromDisk();
+      return state.jobs[jobId] || null;
+    });
+  }
+
+  async updateJob(jobId, updates) {
+    return this.runExclusive(async () => {
+      const state = await this.readFromDisk();
+      const existing = state.jobs[jobId];
+
+      if (!existing) {
+        return null;
+      }
+
+      const next = normalizeJob({
+        ...existing,
+        ...updates,
+        id: jobId,
+      });
+
+      state.jobs[jobId] = next;
+      await this.writeToDisk(state);
+      return next;
+    });
+  }
+
+  async pullQueuedJob(hostId, { now = new Date().toISOString() } = {}) {
+    return this.runExclusive(async () => {
+      const state = await this.readFromDisk();
+      const next = Object.values(state.jobs)
+        .filter((job) => job.hostId === String(hostId) && job.status === "queued")
+        .sort(compareJobs)
+        .find((job) => {
+          if (job.kind !== "run-turn") {
+            return true;
+          }
+
+          const session = state.sessions[job.sessionId];
+          return session && !session.isBusy;
+        });
+
+      if (!next) {
+        return null;
+      }
+
+      const claimed = normalizeJob({
+        ...next,
+        status: "running",
+        startedAt: next.startedAt || now,
+        updatedAt: now,
+      });
+
+      state.jobs[claimed.id] = claimed;
+      if (claimed.kind === "run-turn" && state.sessions[claimed.sessionId]) {
+        state.sessions[claimed.sessionId] = normalizeSession({
+          ...state.sessions[claimed.sessionId],
+          isBusy: true,
+          activeRunSource: "telegram",
+          updatedAt: now,
+        });
+      }
+      await this.writeToDisk(state);
+      return claimed;
+    });
+  }
+
+  async runExclusive(operation) {
+    const next = this.pendingOperation.then(operation, operation);
+    this.pendingOperation = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
+  async readFromDisk() {
     try {
       const content = await fs.readFile(this.filePath, "utf8");
       return normalizeState(JSON.parse(content));
@@ -26,240 +305,13 @@ export class StateStore {
     }
   }
 
-  async write(state) {
+  async writeToDisk(state) {
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
-    const tempPath = `${this.filePath}.tmp`;
+    const tempPath = `${this.filePath}.${process.pid}.${Date.now()}.${Math.random()
+      .toString(16)
+      .slice(2)}.tmp`;
     await fs.writeFile(tempPath, JSON.stringify(state, null, 2));
     await fs.rename(tempPath, this.filePath);
-  }
-
-  async listSessions({ includeClosed = false } = {}) {
-    const state = await this.read();
-    return Object.values(state.sessions)
-      .filter((session) => includeClosed || session.status !== "closed")
-      .sort(compareSessions);
-  }
-
-  async getSession(sessionId) {
-    const state = await this.read();
-    return state.sessions[sessionId] || null;
-  }
-
-  async saveSession(session) {
-    const state = await this.read();
-    const normalized = normalizeSession(session);
-    state.sessions[normalized.id] = normalized;
-    syncBindingsForSession(state, normalized);
-    await this.write(state);
-    return normalized;
-  }
-
-  async upsertSession(sessionId, updates, defaults = {}) {
-    const state = await this.read();
-    const existing = state.sessions[sessionId];
-    const next = normalizeSession({
-      ...defaults,
-      ...existing,
-      ...updates,
-      id: sessionId,
-    });
-
-    state.sessions[sessionId] = next;
-    syncBindingsForSession(state, next);
-    await this.write(state);
-    return next;
-  }
-
-  async updateSession(sessionId, updates) {
-    const state = await this.read();
-    const existing = state.sessions[sessionId];
-
-    if (!existing) {
-      return null;
-    }
-
-    const next = normalizeSession({
-      ...existing,
-      ...updates,
-    });
-
-    state.sessions[sessionId] = next;
-    syncBindingsForSession(state, next);
-    await this.write(state);
-    return next;
-  }
-
-  async bindSession(sessionId, binding) {
-    const state = await this.read();
-    const existing = state.sessions[sessionId];
-
-    if (!existing) {
-      return null;
-    }
-
-    const next = normalizeSession({
-      ...existing,
-      forumChatId: String(binding.forumChatId),
-      topicId: Number(binding.topicId),
-      topicName: binding.topicName || existing.topicName || "",
-      topicLink: binding.topicLink || existing.topicLink || "",
-      bootstrapMessageId: binding.bootstrapMessageId || existing.bootstrapMessageId || null,
-      status: "bound",
-      updatedAt: binding.updatedAt || new Date().toISOString(),
-    });
-
-    state.sessions[sessionId] = next;
-    syncBindingsForSession(state, next);
-    await this.write(state);
-    return next;
-  }
-
-  async detachSession(sessionId, { status = "headless" } = {}) {
-    const state = await this.read();
-    const existing = state.sessions[sessionId];
-
-    if (!existing) {
-      return null;
-    }
-
-    const next = normalizeSession({
-      ...existing,
-      forumChatId: "",
-      topicId: null,
-      topicName: "",
-      topicLink: "",
-      bootstrapMessageId: null,
-      status,
-      updatedAt: new Date().toISOString(),
-    });
-
-    state.sessions[sessionId] = next;
-    syncBindingsForSession(state, next);
-    await this.write(state);
-    return next;
-  }
-
-  async getSessionByTopic(forumChatId, topicId) {
-    const state = await this.read();
-    const sessionId = state.topicBindings[buildTopicKey(forumChatId, topicId)];
-    if (!sessionId) {
-      return null;
-    }
-
-    return state.sessions[sessionId] || null;
-  }
-
-  async listHosts() {
-    const state = await this.read();
-    return Object.values(state.hosts).sort(compareHosts);
-  }
-
-  async getHost(hostId) {
-    const state = await this.read();
-    return state.hosts[String(hostId)] || null;
-  }
-
-  async upsertHost(hostId, updates) {
-    const state = await this.read();
-    const existing = state.hosts[String(hostId)] || {};
-    const next = normalizeHost({
-      ...existing,
-      ...updates,
-      id: hostId,
-    });
-
-    state.hosts[next.id] = next;
-    await this.write(state);
-    return next;
-  }
-
-  async listJobsForSession(sessionId, { statuses = [] } = {}) {
-    const state = await this.read();
-    const allowedStatuses = new Set(statuses.map((status) => String(status)));
-
-    return Object.values(state.jobs)
-      .filter((job) => {
-        if (job.sessionId !== String(sessionId)) {
-          return false;
-        }
-
-        if (allowedStatuses.size === 0) {
-          return true;
-        }
-
-        return allowedStatuses.has(job.status);
-      })
-      .sort(compareJobs);
-  }
-
-  async createJob(job) {
-    const state = await this.read();
-    const normalized = normalizeJob(job);
-    state.jobs[normalized.id] = normalized;
-    await this.write(state);
-    return normalized;
-  }
-
-  async getJob(jobId) {
-    const state = await this.read();
-    return state.jobs[jobId] || null;
-  }
-
-  async updateJob(jobId, updates) {
-    const state = await this.read();
-    const existing = state.jobs[jobId];
-
-    if (!existing) {
-      return null;
-    }
-
-    const next = normalizeJob({
-      ...existing,
-      ...updates,
-      id: jobId,
-    });
-
-    state.jobs[jobId] = next;
-    await this.write(state);
-    return next;
-  }
-
-  async pullQueuedJob(hostId, { now = new Date().toISOString() } = {}) {
-    const state = await this.read();
-    const next = Object.values(state.jobs)
-      .filter((job) => job.hostId === String(hostId) && job.status === "queued")
-      .sort(compareJobs)
-      .find((job) => {
-        if (job.kind !== "run-turn") {
-          return true;
-        }
-
-        const session = state.sessions[job.sessionId];
-        return session && !session.isBusy;
-      });
-
-    if (!next) {
-      return null;
-    }
-
-    const claimed = normalizeJob({
-      ...next,
-      status: "running",
-      startedAt: next.startedAt || now,
-      updatedAt: now,
-    });
-
-    state.jobs[claimed.id] = claimed;
-    if (claimed.kind === "run-turn" && state.sessions[claimed.sessionId]) {
-      state.sessions[claimed.sessionId] = normalizeSession({
-        ...state.sessions[claimed.sessionId],
-        isBusy: true,
-        activeRunSource: "telegram",
-        updatedAt: now,
-      });
-    }
-    await this.write(state);
-    return claimed;
   }
 }
 

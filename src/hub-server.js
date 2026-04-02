@@ -101,12 +101,6 @@ export function createHubServer({
           return sendJson(response, 404, { error: "job not found" });
         }
 
-        const session = await store.getSession(job.sessionId);
-
-        if (!session) {
-          return sendJson(response, 404, { error: "session not found" });
-        }
-
         const isFailure = Boolean(payload.error);
         if (job.kind === "browse-dir") {
           await store.updateJob(jobId, {
@@ -117,6 +111,12 @@ export function createHubServer({
             error: payload.error || "",
           });
           return sendJson(response, 200, { ok: true });
+        }
+
+        const session = await store.getSession(job.sessionId);
+
+        if (!session) {
+          return sendJson(response, 404, { error: "session not found" });
         }
 
         await store.updateJob(jobId, {

@@ -21,14 +21,19 @@ async function main() {
         roots: codexConfig.startRoots,
       });
 
-      if (!pulled?.job || !pulled?.session) {
+      if (!pulled?.job) {
         await sleep(1500);
         continue;
       }
 
-      await executeJob(pulled.job, pulled.session);
+      if (pulled.job.kind === "run-turn" && !pulled?.session) {
+        await sleep(1500);
+        continue;
+      }
+
+      await executeJob(pulled.job, pulled.session || null);
     } catch (error) {
-      console.error("worker poll failed:", error.message);
+      console.error("worker poll failed:", formatError(error));
       await sleep(3000);
     }
   }
@@ -94,6 +99,22 @@ async function postJson(url, payload) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function formatError(error) {
+  if (!error) {
+    return "unknown error";
+  }
+
+  const parts = [error.message || String(error)];
+  if (error.cause?.message) {
+    parts.push(`cause=${error.cause.message}`);
+  }
+  if (error.stack) {
+    parts.push(error.stack);
+  }
+
+  return parts.join("\n");
 }
 
 async function listDirectories(directoryPath, rootPath, allowedRoots) {
