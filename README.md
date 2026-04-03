@@ -50,6 +50,7 @@ Run coding agents on your machine as usual. Global Codex and Claude Code hooks i
    - On the hub machine, also set:
      - `RELAY_HUB_TOKEN=<same-shared-secret>`
      - optionally `RELAY_HUB_BIND_HOST=0.0.0.0` if other machines must reach it over LAN/Tailscale
+   - On worker machines, optionally set `RELAY_WORKER_CONCURRENCY` to allow multiple Telegram-run sessions in parallel on that host. Default: `4`
 
 4. Find your Telegram user id:
 

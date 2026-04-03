@@ -444,13 +444,14 @@ export function formatSessionDetails(session) {
     `state: ${session.status}`,
     `origin: ${session.createdVia}`,
     `cwd: ${session.cwd}`,
+    session.gitBranch ? `branch: ${session.gitBranch}` : "",
     `model: ${session.model || "(default)"}`,
     `intermediate_steps: ${session.showIntermediateSteps ? "on" : "off"}`,
     `created: ${session.createdAt}`,
     `updated: ${session.updatedAt}`,
     session.topicId ? `topic: ${session.topicId}` : "topic: not bound",
     session.topicLink ? `topic_link: ready` : "topic_link: none",
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 export function formatLatestReplyHeader(session) {

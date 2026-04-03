@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { promisify } from "node:util";
 import { runAgentTurn } from "./agent-runtime.js";
 import {
   buildTopicPrompt,
@@ -35,6 +37,7 @@ const MAX_COMMAND_OUTPUT_CHARS = 1000;
 const MAX_DRAFT_REPLY_CHARS = 2200;
 const RETENTION_SWEEP_INTERVAL_MS = 60_000;
 const RUNNING_TOPIC_PREFIX = "⏳ ";
+const execFileAsync = promisify(execFile);
 
 export function createRelayApp({
   botConfig,
@@ -47,6 +50,7 @@ export function createRelayApp({
   clock = () => Date.now(),
   logger = console,
   sleep = defaultSleep,
+  getGitBranch = resolveGitBranch,
 }) {
   const localSessionWorkers = new Map();
   const localActiveRuns = new Map();
@@ -226,7 +230,7 @@ export function createRelayApp({
       await telegram.sendMessage(
         forumChat.id,
         session
-          ? formatSessionDetails(session)
+          ? await formatDetailedSessionStatus(session)
           : unboundTopicText("create or bind"),
         {
           message_thread_id: topicId,
@@ -812,7 +816,7 @@ export function createRelayApp({
         await telegram.sendMessage(
           forumChat.id,
           session
-            ? formatSessionDetails(session)
+            ? await formatDetailedSessionStatus(session)
             : unboundTopicText("bind"),
           {
             message_thread_id: topicId,
@@ -961,7 +965,7 @@ export function createRelayApp({
       await telegram.sendMessage(
         forumChat.id,
         session
-          ? formatSessionDetails(session)
+          ? await formatDetailedSessionStatus(session)
           : unboundTopicText("bind"),
         {
           message_thread_id: topicId,
@@ -1425,7 +1429,7 @@ export function createRelayApp({
       return editOrSend(chatId, messageId, "Session not found.");
     }
 
-    return editOrSend(chatId, messageId, formatSessionDetails(session), {
+    return editOrSend(chatId, messageId, await formatDetailedSessionStatus(session), {
       reply_markup: buildSessionDetailKeyboard(
         session,
         sessionKeyboardActions(panelContext),
@@ -2051,6 +2055,19 @@ export function createRelayApp({
     return token;
   }
 
+  async function formatDetailedSessionStatus(session) {
+    const gitBranch = await getGitBranch(session.cwd);
+
+    if (!gitBranch) {
+      return formatSessionDetails(session);
+    }
+
+    return formatSessionDetails({
+      ...session,
+      gitBranch,
+    });
+  }
+
   function issueSessionActionToken(action, sessionId, extra = {}) {
     return `session:ui:${issueUiToken({
       kind: "session-action",
@@ -2397,6 +2414,22 @@ export function formatPendingMessage(session, pendingAhead = 0) {
     "state: queued",
     `ahead: ${pendingAhead} ${turnLabel}`,
   ].join("\n");
+}
+
+async function resolveGitBranch(cwd) {
+  if (!cwd) {
+    return "";
+  }
+
+  try {
+    const { stdout } = await execFileAsync("git", ["branch", "--show-current"], {
+      cwd,
+      timeout: 2000,
+    });
+    return String(stdout || "").trim();
+  } catch {
+    return "";
+  }
 }
 
 export function appendTail(current, delta, maxChars) {

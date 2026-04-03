@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { prepareTelegramAttachments } from "./attachments.js";
 import { getProviderModel, getRuntimeConfig } from "./config.js";
 import { applyProgressUpdate, createProgressState } from "./relay-app.js";
@@ -20,33 +21,68 @@ async function main() {
     throw new Error("RELAY_HUB_URL is required for worker mode.");
   }
 
-  console.log(`worker up host=${codexConfig.hostId} hub=${codexConfig.hubUrl}`);
+  console.log(
+    `worker up host=${codexConfig.hostId} hub=${codexConfig.hubUrl} concurrency=${codexConfig.workerConcurrency}`,
+  );
 
-  while (true) {
+  await Promise.all(
+    Array.from({ length: codexConfig.workerConcurrency }, () =>
+      runWorkerLane({
+        pullNextJob: pullNextJobFromHub,
+        executeJob,
+        sleep,
+        onError(error) {
+          console.error("worker poll failed:", formatError(error));
+        },
+      })),
+  );
+}
+
+export async function runWorkerLane({
+  pullNextJob,
+  executeJob,
+  sleep,
+  onError = () => {},
+  shouldContinue = () => true,
+  idleSleepMs = 1500,
+  errorSleepMs = 3000,
+} = {}) {
+  while (shouldContinue()) {
     try {
-      const pulled = await postJson(`${codexConfig.hubUrl}/api/jobs/pull`, {
-        hostId: codexConfig.hostId,
-        label: codexConfig.hostId,
-        defaultCwd: codexConfig.defaultCwd,
-        roots: codexConfig.startRoots,
-      });
+      const pulled = await pullNextJob();
 
       if (!pulled?.job) {
-        await sleep(1500);
+        if (shouldContinue()) {
+          await sleep(idleSleepMs);
+        }
         continue;
       }
 
       if (pulled.job.kind === "run-turn" && !pulled?.session) {
-        await sleep(1500);
+        if (shouldContinue()) {
+          await sleep(idleSleepMs);
+        }
         continue;
       }
 
       await executeJob(pulled.job, pulled.session || null);
     } catch (error) {
-      console.error("worker poll failed:", formatError(error));
-      await sleep(3000);
+      onError(error);
+
+      if (shouldContinue()) {
+        await sleep(errorSleepMs);
+      }
     }
   }
+}
+
+async function pullNextJobFromHub() {
+  return postJson(`${codexConfig.hubUrl}/api/jobs/pull`, {
+    hostId: codexConfig.hostId,
+    label: codexConfig.hostId,
+    defaultCwd: codexConfig.defaultCwd,
+    roots: codexConfig.startRoots,
+  });
 }
 
 async function executeJob(job, session) {
@@ -311,4 +347,10 @@ function isInsideRoot(targetPath, rootPath) {
   return targetPath === rootPath || targetPath.startsWith(`${rootPath}${path.sep}`);
 }
 
-await main();
+function isMainModule() {
+  return Boolean(process.argv[1]) && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+}
+
+if (isMainModule()) {
+  await main();
+}

@@ -56,6 +56,7 @@ export function getRuntimeConfig() {
     whisperBin: process.env.WHISPER_BIN || "whisper",
     hostId: process.env.RELAY_HOST_ID || os.hostname(),
     startRoots: getStartRoots(),
+    workerConcurrency: parsePositiveInt(process.env.RELAY_WORKER_CONCURRENCY, 4),
     hubUrl: process.env.RELAY_HUB_URL || "",
     hubToken: process.env.RELAY_HUB_TOKEN || "",
     providers: {

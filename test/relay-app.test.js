@@ -761,6 +761,44 @@ test("When the topic keyboard toggles intermediate steps, then the session is up
   assert.ok(hideButton?.callback_data);
 });
 
+test("When /status is requested in a bound topic, then the git branch is shown when it exists", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const app = createTestApp({
+    store,
+    telegram,
+    getGitBranch: async (cwd) => (cwd === "/repo" ? "feature/topic-status" : ""),
+  });
+
+  await store.saveSession({
+    id: "session-topic-status-branch-1",
+    label: "Topic status branch",
+    threadId: "thread-topic-status-branch-1",
+    cwd: "/repo",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+    status: "bound",
+    forumChatId: "-1001",
+    topicId: 17,
+    topicName: "Topic status branch",
+    topicLink: "https://t.me/c/1001/17",
+  });
+
+  await app.initialize();
+  await app.handleUpdate({
+    message: {
+      text: "/status",
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: TEST_USER_ID },
+      message_thread_id: 17,
+    },
+  });
+
+  const sent = telegram.calls.sendMessage.at(-1);
+
+  assert.match(sent.text, /branch: feature\/topic-status/);
+});
+
 test("When archive is tapped in a topic, then the session is archived and the topic is closed", async () => {
   const store = await createTempStore();
   const telegram = createFakeTelegram();
@@ -1466,6 +1504,7 @@ function createTestApp({
   store,
   telegram,
   runTurn,
+  getGitBranch,
   clock,
   now = () => "2026-04-02T12:00:00.000Z",
   hubServer = null,
@@ -1506,6 +1545,7 @@ function createTestApp({
     clock,
     hubServer,
     now,
+    getGitBranch,
     logger: {
       log() {},
       error() {},
