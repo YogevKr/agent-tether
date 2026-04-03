@@ -1,8 +1,10 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { applyHookEvent } from "./hook-index.js";
-import { createProgressState } from "./relay-app.js";
+import { createProgressState, formatProgressMessage } from "./relay-app.js";
 import { formatProviderName } from "./session-view.js";
+
+const RUNNING_TOPIC_PREFIX = "⏳ ";
 
 export function createHubServer({
   botConfig,
@@ -67,6 +69,7 @@ export function createHubServer({
       activeRunSource: "",
       updatedAt: finishedAt,
     });
+    await syncTopicRunningIndicator(session.id);
 
     if (job.chatId && !isCancelled) {
       try {
@@ -111,6 +114,35 @@ export function createHubServer({
     }
 
     return { ok: true, sessionId: session.id };
+  }
+
+  async function syncTopicRunningIndicator(sessionId) {
+    const session = await store.getSession(sessionId);
+
+    if (!session?.forumChatId || !session.topicId) {
+      return;
+    }
+
+    const jobs = await store.listJobsForSession(sessionId, {
+      statuses: ["queued", "running"],
+    });
+    const isRunning = jobs.some((job) => job.kind === "run-turn");
+    const baseName = String(session.topicName || session.label || "Agent session")
+      .replace(/^⏳\s*/, "")
+      .trim() || "Agent session";
+    const targetName = isRunning
+      ? `${RUNNING_TOPIC_PREFIX}${baseName}`.slice(0, 128)
+      : baseName.slice(0, 128);
+
+    try {
+      await telegram.editForumTopic(session.forumChatId, session.topicId, {
+        name: targetName,
+      });
+    } catch (error) {
+      if (!String(error.message || "").toLowerCase().includes("not modified")) {
+        logger.error(error);
+      }
+    }
   }
 
   const server = http.createServer(async (request, response) => {
@@ -161,6 +193,10 @@ export function createHubServer({
           return sendJson(response, 200, { job: null });
         }
 
+        if (job.kind === "run-turn") {
+          await syncTopicRunningIndicator(job.sessionId);
+        }
+
         const session = await store.getSession(job.sessionId);
         return sendJson(response, 200, { job, session });
       }
@@ -187,13 +223,30 @@ export function createHubServer({
           return sendJson(response, 404, { error: "job not found" });
         }
 
+        const progressState = {
+          ...job.progressState,
+          ...(payload.update || {}),
+        };
+
         await store.updateJob(jobId, {
-          progressState: {
-            ...job.progressState,
-            ...(payload.update || {}),
-          },
+          progressState,
           updatedAt: now(),
         });
+
+        if (job.chatId && job.progressMessageId) {
+          try {
+            await telegram.replaceProgressMessage(
+              job.chatId,
+              { message_id: job.progressMessageId },
+              formatProgressMessage(progressState),
+              {
+                message_thread_id: job.messageThreadId,
+              },
+            );
+          } catch (error) {
+            logger.error(error);
+          }
+        }
 
         return sendJson(response, 200, { ok: true });
       }
@@ -211,6 +264,7 @@ export function createHubServer({
         const outcome = await store.requestStopForSession(sessionId, {
           now: now(),
         });
+        await syncTopicRunningIndicator(sessionId);
 
         return sendJson(response, 200, {
           ok: true,
@@ -275,9 +329,12 @@ export function createHubServer({
       return finalizeJob(jobId, payload);
     },
     async stopRemoteSession(sessionId) {
-      return store.requestStopForSession(sessionId, {
+      const outcome = await store.requestStopForSession(sessionId, {
         now: now(),
       });
+
+      await syncTopicRunningIndicator(sessionId);
+      return outcome;
     },
     async requestDirectoryBrowse(hostId, { directoryPath, rootPath, timeoutMs = 8000 }) {
       const browseJob = await store.createJob({

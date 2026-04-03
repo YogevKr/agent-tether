@@ -35,6 +35,32 @@ test("When binding a session to a topic, then it becomes retrievable by forum to
   assert.equal(session?.topicLink, "https://t.me/c/1001/9");
 });
 
+test("When sessions are saved without an intermediate-steps flag, then it defaults off and persists when enabled", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-store-"));
+  const store = new StateStore(path.join(tempDir, "state.json"));
+
+  await store.saveSession({
+    id: "session-steps-1",
+    label: "Steps",
+    cwd: "/repo",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+  });
+
+  const initial = await store.getSession("session-steps-1");
+
+  assert.equal(initial?.showIntermediateSteps, false);
+
+  await store.updateSession("session-steps-1", {
+    showIntermediateSteps: true,
+    updatedAt: "2026-04-02T10:01:00.000Z",
+  });
+
+  const updated = await store.getSession("session-steps-1");
+
+  assert.equal(updated?.showIntermediateSteps, true);
+});
+
 test("When detaching a bound session, then its topic binding is removed", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-store-"));
   const store = new StateStore(path.join(tempDir, "state.json"));

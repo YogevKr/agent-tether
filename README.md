@@ -162,8 +162,9 @@ After the next hook event, that session appears in Telegram `/sessions` with its
 - `New Session` lets you choose provider, node, place, and folder, then opens a fresh topic
 - Topic messages can be plain text, images, documents, or voice notes
 - Accepted topic prompts get a best-effort 👀 reaction immediately
-- Topic control messages include buttons for `Status`, `Queue`, `Stop`, `Latest`, `Detach`, and `Archive`
-- Telegram now posts only the final reply for each turn, with Markdown rendered in Telegram
+- Topic control messages include buttons for `Status`, `Queue`, `Stop`, `Latest`, `Show Steps` / `Hide Steps`, `Detach`, and `Archive`
+- Session details include a `Show Steps` / `Hide Steps` toggle
+- By default Telegram posts only the final reply for each turn; when steps are enabled for a session, Telegram shows a live intermediate-steps panel first and then replaces it with the final Markdown reply
 - Session lists are sorted by newest `updatedAt` first and paginated 5 per page
 - Slash commands still work, but normal use should not require typing them
 
@@ -215,6 +216,11 @@ npm run start-session -- --label "docs cleanup" --notify-chat 123456789 --prompt
 - `Details`
 - `Archive`
 
+Inside `Details`:
+
+- `Show Steps` or `Hide Steps` toggles live intermediate-step updates for that session
+- `Latest Reply`
+
 `/archived` shows hidden sessions with:
 
 - row number: restore
@@ -229,7 +235,9 @@ Inside a bound forum topic:
 - images are downloaded and passed through to Codex as image inputs
 - documents are downloaded into a temporary attachment directory and referenced in the prompt context
 - voice notes are downloaded, transcribed with `whisper`, and attached with the transcript
-- Telegram sends the final reply after the turn completes, preserving Markdown formatting
+- Telegram sends only the final reply by default
+- `Show Steps` / `Hide Steps` is available directly on the bound-topic keyboard and in session details
+- If `Show Steps` is enabled for the session, Telegram posts a queued/progress message with commands, reasoning summaries, and draft reply text while the turn runs, then replaces it with the final reply
 - `/queue` shows the running turn plus queued Telegram prompts
 - `/stop` aborts the current Telegram-run turn and clears queued Telegram prompts
 - `/status` shows session details
@@ -283,6 +291,7 @@ MIT
   - agent session id
   - host id
   - latest assistant reply
+  - whether intermediate-step updates are enabled
   - optional forum topic binding
 
 ## Safety defaults

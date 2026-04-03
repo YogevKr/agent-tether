@@ -62,6 +62,14 @@ export class TelegramClient {
     });
   }
 
+  async editForumTopic(chatId, topicId, options = {}) {
+    return this.request("editForumTopic", {
+      chat_id: chatId,
+      message_thread_id: topicId,
+      ...options,
+    });
+  }
+
   async closeForumTopic(chatId, topicId) {
     return this.request("closeForumTopic", {
       chat_id: chatId,

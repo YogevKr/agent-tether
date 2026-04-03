@@ -153,6 +153,80 @@ test("When more than five sessions exist, then /sessions paginates with next and
   assert.equal(secondPagePrimaryButton.text, "6");
 });
 
+test("When session details toggle intermediate steps, then the setting is updated for that session", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const app = createTestApp({ store, telegram });
+
+  await store.saveSession({
+    id: "session-steps-toggle",
+    label: "Toggle steps",
+    threadId: "thread-toggle",
+    cwd: "/repo",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+    status: "headless",
+  });
+
+  await app.initialize();
+  await app.handleUpdate({
+    message: {
+      text: "/sessions",
+      chat: { id: TEST_USER_ID, type: "private" },
+      from: { id: TEST_USER_ID },
+    },
+  });
+
+  const sessionsPanel = telegram.calls.sendMessage.at(-1);
+  const detailsButton = sessionsPanel.options.reply_markup.inline_keyboard
+    .flat()
+    .find((button) => button.text === "Details");
+
+  await app.handleUpdate({
+    callback_query: {
+      id: "cb-session-details",
+      data: detailsButton.callback_data,
+      from: { id: TEST_USER_ID },
+      message: {
+        message_id: sessionsPanel.message.message_id,
+        chat: { id: TEST_USER_ID, type: "private" },
+      },
+    },
+  });
+
+  const detailsPanel = telegram.calls.editMessage.at(-1);
+  const toggleButton = detailsPanel.options.reply_markup.inline_keyboard
+    .flat()
+    .find((button) => button.text === "Show Steps");
+
+  assert.match(detailsPanel.text, /intermediate_steps: off/);
+  assert.ok(toggleButton?.callback_data);
+
+  await app.handleUpdate({
+    callback_query: {
+      id: "cb-session-toggle-steps",
+      data: toggleButton.callback_data,
+      from: { id: TEST_USER_ID },
+      message: {
+        message_id: sessionsPanel.message.message_id,
+        chat: { id: TEST_USER_ID, type: "private" },
+      },
+    },
+  });
+
+  const updated = await store.getSession("session-steps-toggle");
+  const updatedPanel = telegram.calls.editMessage.at(-1);
+  const answer = telegram.calls.answerCallbackQuery.at(-1);
+  const hideButton = updatedPanel.options.reply_markup.inline_keyboard
+    .flat()
+    .find((button) => button.text === "Hide Steps");
+
+  assert.equal(updated?.showIntermediateSteps, true);
+  assert.match(updatedPanel.text, /intermediate_steps: on/);
+  assert.equal(answer.options.text, "Intermediate steps enabled.");
+  assert.ok(hideButton?.callback_data);
+});
+
 test("When /start is requested in DM, then relay shows the home buttons", async () => {
   const store = await createTempStore();
   const telegram = createFakeTelegram();
@@ -626,6 +700,67 @@ test("When a topic keyboard latest button is tapped, then relay resends the late
   assert.equal(answer.options.text, "Latest reply sent.");
 });
 
+test("When the topic keyboard toggles intermediate steps, then the session is updated and the keyboard label flips", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const app = createTestApp({ store, telegram });
+
+  await store.saveSession({
+    id: "session-topic-steps-1",
+    label: "Topic steps",
+    threadId: "thread-topic-steps-1",
+    cwd: "/repo",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+    status: "bound",
+    forumChatId: "-1001",
+    topicId: 16,
+    topicName: "Topic steps",
+    topicLink: "https://t.me/c/1001/16",
+  });
+
+  await app.initialize();
+  await app.handleUpdate({
+    message: {
+      text: "/status",
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: TEST_USER_ID },
+      message_thread_id: 16,
+    },
+  });
+
+  const statusMessage = telegram.calls.sendMessage.at(-1);
+  const toggleButton = statusMessage.options.reply_markup.inline_keyboard
+    .flat()
+    .find((button) => button.text === "Show Steps");
+
+  await app.handleUpdate({
+    callback_query: {
+      id: "cb-topic-steps",
+      data: toggleButton.callback_data,
+      from: { id: TEST_USER_ID },
+      message: {
+        message_id: statusMessage.message.message_id,
+        message_thread_id: 16,
+        chat: { id: -1001, type: "supergroup" },
+      },
+    },
+  });
+
+  const session = await store.getSession("session-topic-steps-1");
+  const replyMarkupEdit = telegram.calls.editMessageReplyMarkup.at(-1);
+  const answer = telegram.calls.answerCallbackQuery.at(-1);
+  const hideButton = replyMarkupEdit.replyMarkup.inline_keyboard
+    .flat()
+    .find((button) => button.text === "Hide Steps");
+
+  assert.equal(session?.showIntermediateSteps, true);
+  assert.equal(replyMarkupEdit.chatId, -1001);
+  assert.equal(replyMarkupEdit.messageId, statusMessage.message.message_id);
+  assert.equal(answer.options.text, "Intermediate steps enabled.");
+  assert.ok(hideButton?.callback_data);
+});
+
 test("When archive is tapped in a topic, then the session is archived and the topic is closed", async () => {
   const store = await createTempStore();
   const telegram = createFakeTelegram();
@@ -784,11 +919,13 @@ test("When a topic message continues a bound session, then relay sends only the 
 
   const session = await store.getSession("session-2");
   const finalMessage = telegram.calls.sendMarkdownMessage.at(-1);
+  const topicNames = telegram.calls.editForumTopic.map((call) => call.options.name);
 
   assert.equal(session?.threadId, "thread-2");
   assert.equal(session?.latestAssistantMessage, "Final reply");
   assert.equal(telegram.calls.replaceProgressMessage.length, 0);
   assert.equal(finalMessage.text, "Final reply");
+  assert.deepEqual(topicNames, ["⏳ Streaming", "Streaming"]);
   assert.deepEqual(telegram.calls.setMessageReaction.at(-1), {
     chatId: -1001,
     messageId: 1,
@@ -796,6 +933,71 @@ test("When a topic message continues a bound session, then relay sends only the 
     options: { is_big: false },
   });
   assert.ok(telegram.calls.sendChatAction.length >= 1);
+});
+
+test("When intermediate steps are enabled for a topic session, then relay replaces a live progress message before the final reply", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  let tick = 0;
+  const app = createTestApp({
+    store,
+    telegram,
+    clock: () => {
+      tick += 1000;
+      return tick;
+    },
+    runTurn: async ({ onProgress }) => {
+      onProgress({ type: "command_started", command: "npm test" });
+      onProgress({ type: "command_output_delta", delta: "running\n" });
+      onProgress({ type: "agent_message_delta", delta: "Partial" });
+      onProgress({ type: "agent_message_delta", delta: " reply" });
+      return {
+        threadId: "thread-steps-2",
+        message: "Final reply",
+      };
+    },
+  });
+
+  await store.saveSession({
+    id: "session-steps-2",
+    label: "Streaming steps",
+    threadId: "thread-steps-1",
+    cwd: "/repo",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+    status: "bound",
+    forumChatId: "-1001",
+    topicId: 28,
+    topicName: "Streaming steps",
+    topicLink: "https://t.me/c/1001/28",
+    showIntermediateSteps: true,
+  });
+
+  await app.initialize();
+  await app.handleUpdate({
+    message: {
+      message_id: 1,
+      text: "continue with steps",
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: TEST_USER_ID },
+      message_thread_id: 28,
+    },
+  });
+  await app.waitForIdle();
+
+  const session = await store.getSession("session-steps-2");
+  const pendingMessage = telegram.calls.sendMessage.at(-1);
+  const progressUpdate = telegram.calls.replaceProgressMessage.at(-1);
+  const finalMessage = telegram.calls.replaceProgressMessageWithMarkdown.at(-1);
+
+  assert.equal(session?.threadId, "thread-steps-2");
+  assert.equal(session?.latestAssistantMessage, "Final reply");
+  assert.match(pendingMessage.text, /Continuing session: Streaming steps/);
+  assert.match(pendingMessage.text, /state: waiting for agent/);
+  assert.match(progressUpdate.text, /command: npm test/);
+  assert.match(progressUpdate.text, /draft reply:/);
+  assert.equal(finalMessage.text, "Final reply");
+  assert.equal(telegram.calls.sendMarkdownMessage.length, 0);
 });
 
 test("When a second topic prompt arrives while Codex is still running, then replies are sent in order without progress messages", async () => {
@@ -924,6 +1126,7 @@ test("When a topic message targets a remote host session, then relay queues the 
   assert.equal(hubServer.calls[0].session.hostId, "desktop");
   assert.equal(hubServer.calls[0].payload.prompt, "continue remotely");
   assert.equal(hubServer.calls[0].payload.progressMessageId, undefined);
+  assert.equal(telegram.calls.editForumTopic.length, 0);
   assert.deepEqual(telegram.calls.setMessageReaction.at(-1), {
     chatId: -1001,
     messageId: 1,
@@ -932,6 +1135,58 @@ test("When a topic message targets a remote host session, then relay queues the 
   });
   assert.equal(telegram.calls.sendMessage.length, 0);
   assert.equal(telegram.calls.replaceProgressMessage.length, 0);
+});
+
+test("When intermediate steps are enabled for a remote host session, then relay queues a progress message id with the remote job", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const hubServer = {
+    calls: [],
+    async start() {},
+    async queueRemoteJob(session, payload) {
+      this.calls.push({ session, payload });
+    },
+  };
+  const app = createTestApp({
+    store,
+    telegram,
+    hubServer,
+    runTurn: async () => {
+      throw new Error("should not run locally");
+    },
+  });
+
+  await store.saveSession({
+    id: "session-remote-steps",
+    label: "Remote steps",
+    threadId: "thread-remote-steps",
+    cwd: "/repo",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+    status: "bound",
+    hostId: "desktop",
+    forumChatId: "-1001",
+    topicId: 29,
+    topicName: "Remote steps",
+    topicLink: "https://t.me/c/1001/29",
+    showIntermediateSteps: true,
+  });
+
+  await app.initialize();
+  await app.handleUpdate({
+    message: {
+      message_id: 1,
+      text: "continue remotely with steps",
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: TEST_USER_ID },
+      message_thread_id: 29,
+    },
+  });
+  await app.waitForIdle();
+
+  assert.equal(hubServer.calls.length, 1);
+  assert.equal(hubServer.calls[0].payload.progressMessageId, 1);
+  assert.match(telegram.calls.sendMessage.at(-1).text, /Continuing session: Remote steps/);
 });
 
 test("When a Claude topic turn runs without a saved model, then the Claude provider default model is used", async () => {
@@ -1034,11 +1289,16 @@ test("When /stop is requested in a bound topic, then the running turn is aborted
   const store = await createTempStore();
   const telegram = createFakeTelegram();
   const runCalls = [];
+  let markRunStarted = () => {};
+  const runStarted = new Promise((resolve) => {
+    markRunStarted = resolve;
+  });
   const app = createTestApp({
     store,
     telegram,
     runTurn: async (input) => {
       runCalls.push(input);
+      markRunStarted();
       return new Promise((resolve, reject) => {
         input.signal.addEventListener(
           "abort",
@@ -1073,7 +1333,7 @@ test("When /stop is requested in a bound topic, then the running turn is aborted
       message_id: 1,
     },
   });
-  await Promise.resolve();
+  await runStarted;
 
   await app.handleUpdate({
     message: {
@@ -1262,7 +1522,9 @@ function createFakeTelegram({ files = {} } = {}) {
     createForumTopic: [],
     deleteForumTopic: [],
     downloadFile: [],
+    editForumTopic: [],
     editMessage: [],
+    editMessageReplyMarkup: [],
     getFile: [],
     replaceProgressMessage: [],
     reopenForumTopic: [],
@@ -1323,6 +1585,10 @@ function createFakeTelegram({ files = {} } = {}) {
         name,
       };
     },
+    async editForumTopic(chatId, topicId, options = {}) {
+      calls.editForumTopic.push({ chatId, topicId, options });
+      return true;
+    },
     async closeForumTopic(chatId, topicId) {
       calls.closeForumTopic.push({ chatId, topicId });
       return true;
@@ -1360,6 +1626,13 @@ function createFakeTelegram({ files = {} } = {}) {
         message_id: messageId,
         chat: { id: chatId },
         text,
+      };
+    },
+    async editMessageReplyMarkup(chatId, messageId, replyMarkup) {
+      calls.editMessageReplyMarkup.push({ chatId, messageId, replyMarkup });
+      return {
+        message_id: messageId,
+        chat: { id: chatId },
       };
     },
     async sendLongMessage(chatId, text, options = {}) {

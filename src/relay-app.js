@@ -29,10 +29,12 @@ import {
 import { buildForumTopicUrl } from "./telegram.js";
 
 const STREAM_EDIT_THROTTLE_MS = 900;
+const TYPING_HEARTBEAT_MS = 4000;
 const MAX_REASONING_CHARS = 700;
 const MAX_COMMAND_OUTPUT_CHARS = 1000;
 const MAX_DRAFT_REPLY_CHARS = 2200;
 const RETENTION_SWEEP_INTERVAL_MS = 60_000;
+const RUNNING_TOPIC_PREFIX = "⏳ ";
 
 export function createRelayApp({
   botConfig,
@@ -352,12 +354,17 @@ export function createRelayApp({
     const pendingAhead = await countPendingTurns(session);
     await acknowledgeAcceptedTopicMessage(message);
     const prompt = buildTopicPrompt(message);
+    const progressMessageId = await maybeStartIntermediateSteps(session, {
+      messageThreadId: topicId,
+      pendingAhead,
+    });
 
     if (hubServer && session.hostId && session.hostId !== botConfig.hostId) {
       await hubServer.queueRemoteJob(session, {
         prompt,
         chatId: forumChat.id,
         messageThreadId: topicId,
+        progressMessageId,
         pendingAhead,
         attachments,
       });
@@ -368,6 +375,8 @@ export function createRelayApp({
       prompt,
       attachments,
       messageThreadId: topicId,
+      progressMessageId,
+      pendingAhead,
     });
   }
 
@@ -665,6 +674,33 @@ export function createRelayApp({
         });
         return;
       }
+
+      if (context.action === "toggle-steps") {
+        const session = await store.getSession(context.sessionId);
+
+        if (!session) {
+          await telegram.answerCallbackQuery(query.id, {
+            text: "Session not found.",
+            show_alert: true,
+          });
+          return;
+        }
+
+        await store.updateSession(session.id, {
+          showIntermediateSteps: !session.showIntermediateSteps,
+          updatedAt: now(),
+        });
+        await renderSessionDetails(chatId, messageId, context.sessionId, {
+          mode: context.mode || "open",
+          page: context.page || 0,
+        });
+        await telegram.answerCallbackQuery(query.id, {
+          text: session.showIntermediateSteps
+            ? "Intermediate steps hidden."
+            : "Intermediate steps enabled.",
+        });
+        return;
+      }
     }
 
     if (query.data === "sessions:refresh") {
@@ -844,6 +880,36 @@ export function createRelayApp({
         );
         await telegram.answerCallbackQuery(query.id, {
           text: "Stop requested.",
+        });
+        return;
+      }
+
+      if (context.action === "toggle-steps") {
+        if (!session) {
+          await telegram.answerCallbackQuery(query.id, {
+            text: "No session bound.",
+            show_alert: true,
+          });
+          return;
+        }
+
+        const updatedSession = await store.updateSession(session.id, {
+          showIntermediateSteps: !session.showIntermediateSteps,
+          updatedAt: now(),
+        });
+
+        if (updatedSession && query.message?.message_id) {
+          await telegram.editMessageReplyMarkup(
+            forumChat.id,
+            query.message.message_id,
+            buildTopicKeyboard(updatedSession, topicKeyboardActions()),
+          );
+        }
+
+        await telegram.answerCallbackQuery(query.id, {
+          text: session.showIntermediateSteps
+            ? "Intermediate steps hidden."
+            : "Intermediate steps enabled.",
         });
         return;
       }
@@ -1472,7 +1538,31 @@ export function createRelayApp({
     });
   }
 
-  async function queueLocalSessionRun(session, { prompt, attachments, messageThreadId }) {
+  async function maybeStartIntermediateSteps(session, { messageThreadId, pendingAhead }) {
+    if (!session.showIntermediateSteps) {
+      return undefined;
+    }
+
+    try {
+      const progressMessage = await telegram.sendMessage(
+        forumChat.id,
+        formatPendingMessage(session, pendingAhead),
+        {
+          message_thread_id: messageThreadId,
+        },
+      );
+
+      return progressMessage?.message_id;
+    } catch (error) {
+      logger.error(error);
+      return undefined;
+    }
+  }
+
+  async function queueLocalSessionRun(
+    session,
+    { prompt, attachments, messageThreadId, progressMessageId, pendingAhead = 0 },
+  ) {
     await store.createJob({
       id: randomUUID(),
       kind: "run-turn",
@@ -1483,11 +1573,89 @@ export function createRelayApp({
       status: "queued",
       chatId: forumChat.id,
       messageThreadId,
+      progressMessageId,
+      progressState: {
+        ...createProgressState(session),
+        phase: pendingAhead > 0 ? "queued" : "waiting for agent",
+      },
       createdAt: now(),
       updatedAt: now(),
     });
 
     startLocalSessionWorker(session.id);
+  }
+
+  function createLocalProgressReporter({ job, session, messageThreadId }) {
+    if (!job.progressMessageId) {
+      return {
+        onProgress() {},
+        async close() {},
+      };
+    }
+
+    const progressMessage = { message_id: job.progressMessageId };
+    const progressState = {
+      ...createProgressState(session),
+      ...(job.progressState || {}),
+    };
+    let lastFlushAt = 0;
+    let flushPromise = Promise.resolve();
+    let flushTimer = null;
+
+    const flush = async () => {
+      flushTimer = null;
+      const text = formatProgressMessage(progressState);
+
+      try {
+        await store.updateJob(job.id, {
+          progressState,
+          updatedAt: now(),
+        });
+        await telegram.replaceProgressMessage(
+          forumChat.id,
+          progressMessage,
+          text,
+          {
+            message_thread_id: messageThreadId,
+          },
+        );
+        lastFlushAt = clock();
+      } catch (error) {
+        logger.error(error);
+      }
+    };
+
+    const scheduleFlush = () => {
+      if (flushTimer) {
+        return;
+      }
+
+      const remainingMs = Math.max(0, STREAM_EDIT_THROTTLE_MS - (clock() - lastFlushAt));
+
+      if (lastFlushAt === 0 || remainingMs === 0) {
+        flushPromise = flushPromise.then(flush);
+        return;
+      }
+
+      flushTimer = setTimeout(() => {
+        flushPromise = flushPromise.then(flush);
+      }, remainingMs);
+    };
+
+    return {
+      onProgress(update) {
+        applyProgressUpdate(progressState, update);
+        scheduleFlush();
+      },
+      async close() {
+        if (flushTimer) {
+          clearTimeout(flushTimer);
+          flushTimer = null;
+        }
+
+        await flushPromise;
+      },
+    };
   }
 
   function startLocalSessionWorker(sessionId) {
@@ -1547,11 +1715,34 @@ export function createRelayApp({
     const controller = new AbortController();
     const provider = session.provider || codexConfig.defaultProvider || "codex";
     const messageThreadId = job.messageThreadId || session.topicId;
+    const progressReporter = createLocalProgressReporter({
+      job,
+      session,
+      messageThreadId,
+    });
+    let stopTypingHeartbeat = () => {};
     let preparedAttachments = null;
 
     localActiveRuns.set(session.id, {
       jobId: job.id,
       controller,
+    });
+
+    const latestJob = await store.getJob(job.id);
+
+    if (latestJob?.cancelRequestedAt || latestJob?.status === "cancelled") {
+      await finalizeLocalJob(job.id, {
+        cancelled: true,
+        error: "Stopped from Telegram.",
+      });
+      localActiveRuns.delete(session.id);
+      return;
+    }
+
+    await syncTopicRunningIndicator(session.id);
+    stopTypingHeartbeat = startTypingHeartbeat({
+      chatId: forumChat.id,
+      messageThreadId,
     });
 
     try {
@@ -1561,6 +1752,14 @@ export function createRelayApp({
         runtime: codexConfig,
         logger,
       });
+
+      if (controller.signal.aborted) {
+        await finalizeLocalJob(job.id, {
+          cancelled: true,
+          error: "Stopped from Telegram.",
+        });
+        return;
+      }
 
       const result = await runTurn({
         runtime: codexConfig,
@@ -1572,29 +1771,23 @@ export function createRelayApp({
         attachments: preparedAttachments,
         signal: controller.signal,
         onProgress: (update) => {
-          if (
-            update.type === "command_started" ||
-            update.type === "agent_message_delta"
-          ) {
-            void telegram
-              .sendChatAction(forumChat.id, "typing", {
-                message_thread_id: messageThreadId,
-              })
-              .catch(() => {});
-          }
+          progressReporter.onProgress(update);
         },
       });
 
+      await progressReporter.close();
       await finalizeLocalJob(job.id, {
         threadId: result.threadId,
         message: result.message,
       });
     } catch (error) {
+      await progressReporter.close();
       await finalizeLocalJob(job.id, {
         cancelled: controller.signal.aborted,
         error: controller.signal.aborted ? "Stopped from Telegram." : error.message,
       });
     } finally {
+      stopTypingHeartbeat();
       localActiveRuns.delete(session.id);
       await preparedAttachments?.cleanup?.().catch(() => {});
     }
@@ -1638,8 +1831,33 @@ export function createRelayApp({
       activeRunSource: "",
       updatedAt: finishedAt,
     });
+    await syncTopicRunningIndicator(session.id);
 
     if (!job.chatId || isCancelled) {
+      return;
+    }
+
+    if (job.progressMessageId) {
+      if (isFailure) {
+        await telegram.replaceProgressMessage(
+          job.chatId,
+          { message_id: job.progressMessageId },
+          `${formatProviderName(session.provider || codexConfig.defaultProvider || "codex")} failed.\n\n${payload.error}`,
+          {
+            message_thread_id: job.messageThreadId,
+          },
+        );
+        return;
+      }
+
+      await telegram.replaceProgressMessageWithMarkdown(
+        job.chatId,
+        { message_id: job.progressMessageId },
+        payload.message,
+        {
+          message_thread_id: job.messageThreadId,
+        },
+      );
       return;
     }
 
@@ -1694,7 +1912,55 @@ export function createRelayApp({
       active.controller.abort();
     }
 
+    await syncTopicRunningIndicator(session.id);
+
     return outcome;
+  }
+
+  async function syncTopicRunningIndicator(sessionId) {
+    const session = await store.getSession(sessionId);
+
+    if (!session?.forumChatId || !session.topicId) {
+      return;
+    }
+
+    const jobs = await store.listJobsForSession(sessionId, {
+      statuses: ["queued", "running"],
+    });
+    const isRunning = jobs.some((job) => job.kind === "run-turn");
+    const targetName = isRunning
+      ? formatRunningTopicName(session.topicName || session.label)
+      : String(session.topicName || session.label || "Agent session").slice(0, 128);
+
+    try {
+      await telegram.editForumTopic(session.forumChatId, session.topicId, {
+        name: targetName,
+      });
+    } catch (error) {
+      if (!String(error.message || "").toLowerCase().includes("not modified")) {
+        logger.error(error);
+      }
+    }
+  }
+
+  function startTypingHeartbeat({ chatId, messageThreadId }) {
+    if (!chatId || !messageThreadId) {
+      return () => {};
+    }
+
+    const sendTyping = () => {
+      void telegram.sendChatAction(chatId, "typing", {
+        message_thread_id: messageThreadId,
+      }).catch(() => {});
+    };
+
+    sendTyping();
+    const timer = setInterval(sendTyping, TYPING_HEARTBEAT_MS);
+    timer.unref?.();
+
+    return () => {
+      clearInterval(timer);
+    };
   }
 
   async function stopSessionRuns(session) {
@@ -1807,6 +2073,8 @@ export function createRelayApp({
       bindSession: (session) => issueSessionActionToken("create", session.id, { mode, page }),
       showSessionDetails: (session) => issueSessionActionToken("details", session.id, { mode, page }),
       showLatestSessionReply: (session) => issueSessionActionToken("latest", session.id, { mode, page }),
+      toggleIntermediateSteps: (session) =>
+        issueSessionActionToken("toggle-steps", session.id, { mode, page }),
       archiveSession: (session) => issueSessionActionToken("archive", session.id, { mode, page }),
       restoreSession: (session) => issueSessionActionToken("restore", session.id, { mode, page }),
       backToSessions: () => `sessions:page:${mode}:${page}`,
@@ -1820,9 +2088,18 @@ export function createRelayApp({
       showTopicQueue: (session) => issueTopicActionToken("queue", session.id),
       stopTopicSession: (session) => issueTopicActionToken("stop", session.id),
       showLatestTopicReply: (session) => issueTopicActionToken("latest", session.id),
+      toggleTopicIntermediateSteps: (session) => issueTopicActionToken("toggle-steps", session.id),
       detachTopicSession: (session) => issueTopicActionToken("reset", session.id),
       archiveTopicSession: (session) => issueTopicActionToken("archive", session.id),
     };
+  }
+
+  function formatRunningTopicName(topicName) {
+    const baseName = String(topicName || "Agent session")
+      .replace(/^⏳\s*/, "")
+      .trim() || "Agent session";
+
+    return `${RUNNING_TOPIC_PREFIX}${baseName}`.slice(0, 128);
   }
 
   async function archiveSession(sessionId, { touchUpdatedAt = true } = {}) {

@@ -29,7 +29,7 @@ export function topicHelpText(session) {
   return [
     `Session: ${session.label}`,
     "",
-    "Use the buttons below for status, queue, stop, latest reply, detach, or archive.",
+    "Use the buttons below for status, queue, stop, latest reply, step visibility, detach, or archive.",
     "Plain text, images, documents, or voice continue the bound agent session.",
   ].join("\n");
 }
@@ -230,6 +230,7 @@ export function buildSessionDetailKeyboard(
   {
     bindSession = (item) => `session:create:${item.id}`,
     showLatestSessionReply = (item) => `session:latest:${item.id}`,
+    toggleIntermediateSteps = (item) => `session:steps:${item.id}`,
     archiveSession = (item) => `session:archive:${item.id}`,
     restoreSession = (item) => `session:restore:${item.id}`,
     backToSessions = () => "sessions:refresh",
@@ -255,6 +256,13 @@ export function buildSessionDetailKeyboard(
     {
       text: "Latest Reply",
       callback_data: showLatestSessionReply(session),
+    },
+  ]);
+
+  inline_keyboard.push([
+    {
+      text: session.showIntermediateSteps ? "Hide Steps" : "Show Steps",
+      callback_data: toggleIntermediateSteps(session),
     },
   ]);
 
@@ -330,6 +338,7 @@ export function buildTopicKeyboard(
     showTopicQueue = (item) => `topic:queue:${item.id}`,
     stopTopicSession = (item) => `topic:stop:${item.id}`,
     showLatestTopicReply = (item) => `topic:latest:${item.id}`,
+    toggleTopicIntermediateSteps = (item) => `topic:steps:${item.id}`,
     detachTopicSession = (item) => `topic:reset:${item.id}`,
     archiveTopicSession = (item) => `topic:archive:${item.id}`,
   } = {},
@@ -367,6 +376,12 @@ export function buildTopicKeyboard(
         {
           text: "Latest",
           callback_data: showLatestTopicReply(session),
+        },
+      ],
+      [
+        {
+          text: session.showIntermediateSteps ? "Hide Steps" : "Show Steps",
+          callback_data: toggleTopicIntermediateSteps(session),
         },
       ],
       [
@@ -430,6 +445,7 @@ export function formatSessionDetails(session) {
     `origin: ${session.createdVia}`,
     `cwd: ${session.cwd}`,
     `model: ${session.model || "(default)"}`,
+    `intermediate_steps: ${session.showIntermediateSteps ? "on" : "off"}`,
     `created: ${session.createdAt}`,
     `updated: ${session.updatedAt}`,
     session.topicId ? `topic: ${session.topicId}` : "topic: not bound",

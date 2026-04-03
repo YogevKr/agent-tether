@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { prepareTelegramAttachments } from "./attachments.js";
 import { getProviderModel, getRuntimeConfig } from "./config.js";
+import { applyProgressUpdate, createProgressState } from "./relay-app.js";
 import { runAgentTurn } from "./agent-runtime.js";
 import { TelegramClient } from "./telegram.js";
 
@@ -12,6 +13,7 @@ const telegram = codexConfig.telegramToken
       apiBaseUrl: codexConfig.telegramApiBaseUrl,
     })
   : null;
+const TYPING_HEARTBEAT_MS = 4000;
 
 async function main() {
   if (!codexConfig.hubUrl) {
@@ -50,7 +52,9 @@ async function main() {
 async function executeJob(job, session) {
   let attachments = null;
   let stopMonitor = async () => {};
+  let stopTypingHeartbeat = () => {};
   const controller = new AbortController();
+  const progressReporter = createHubProgressReporter({ job, session });
 
   try {
     if (job.kind === "browse-dir") {
@@ -63,6 +67,7 @@ async function executeJob(job, session) {
 
     attachments = await prepareAttachments(job);
     stopMonitor = monitorJobCancellation(job.id, controller);
+    stopTypingHeartbeat = startTypingHeartbeat(job);
 
     const result = await runAgentTurn({
       runtime: codexConfig,
@@ -73,18 +78,24 @@ async function executeJob(job, session) {
       model: session.model || getProviderModel(codexConfig, session.provider),
       attachments,
       signal: controller.signal,
+      onProgress: (update) => {
+        progressReporter.onProgress(update);
+      },
     });
 
+    await progressReporter.close();
     await postJson(`${codexConfig.hubUrl}/api/jobs/${job.id}/complete`, {
       threadId: result.threadId,
       message: result.message,
     });
   } catch (error) {
+    await progressReporter.close();
     await postJson(`${codexConfig.hubUrl}/api/jobs/${job.id}/complete`, {
       cancelled: controller.signal.aborted,
       error: controller.signal.aborted ? "Stopped from Telegram." : error.message,
     });
   } finally {
+    stopTypingHeartbeat();
     await stopMonitor();
     await attachments?.cleanup?.().catch(() => {});
   }
@@ -123,6 +134,88 @@ async function getJson(url) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function startTypingHeartbeat(job) {
+  if (!telegram || !job.chatId || !job.messageThreadId) {
+    return () => {};
+  }
+
+  const sendTyping = () => {
+    void telegram.sendChatAction(job.chatId, "typing", {
+      message_thread_id: job.messageThreadId,
+    }).catch(() => {});
+  };
+
+  sendTyping();
+  const timer = setInterval(sendTyping, TYPING_HEARTBEAT_MS);
+  timer.unref?.();
+
+  return () => {
+    clearInterval(timer);
+  };
+}
+
+function createHubProgressReporter({ job, session }) {
+  if (!job.progressMessageId || !session) {
+    return {
+      onProgress() {},
+      async close() {},
+    };
+  }
+
+  const progressState = {
+    ...createProgressState(session),
+    ...(job.progressState || {}),
+  };
+  let lastFlushAt = 0;
+  let flushPromise = Promise.resolve();
+  let flushTimer = null;
+
+  const flush = async () => {
+    flushTimer = null;
+
+    try {
+      await postJson(`${codexConfig.hubUrl}/api/jobs/${job.id}/progress`, {
+        update: progressState,
+      });
+      lastFlushAt = Date.now();
+    } catch (error) {
+      console.error("worker progress update failed:", formatError(error));
+    }
+  };
+
+  const scheduleFlush = () => {
+    if (flushTimer) {
+      return;
+    }
+
+    const remainingMs = Math.max(0, 900 - (Date.now() - lastFlushAt));
+
+    if (lastFlushAt === 0 || remainingMs === 0) {
+      flushPromise = flushPromise.then(flush);
+      return;
+    }
+
+    flushTimer = setTimeout(() => {
+      flushPromise = flushPromise.then(flush);
+    }, remainingMs);
+  };
+
+  return {
+    onProgress(update) {
+      applyProgressUpdate(progressState, update);
+      scheduleFlush();
+    },
+    async close() {
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+
+      await flushPromise;
+    },
+  };
 }
 
 async function prepareAttachments(job) {

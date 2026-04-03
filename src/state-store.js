@@ -510,6 +510,7 @@ function normalizeSession(session) {
       session.bootstrapMessageId === ""
         ? null
         : Number(session.bootstrapMessageId),
+    showIntermediateSteps: Boolean(session.showIntermediateSteps),
     isBusy: Boolean(session.isBusy),
     activeRunSource: String(session.activeRunSource || ""),
   };
