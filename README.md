@@ -38,6 +38,7 @@ Run coding agents on your machine as usual. Global Codex and Claude Code hooks i
    - `CODEX_DEFAULT_CWD`
    - `RELAY_START_ROOTS`
    - `RELAY_HOST_ID`
+   - optional: `STATE_FILE` if you want a custom persistence path; default uses an OS app-data location instead of the repo checkout
 
 3. For multi-host mode:
 
@@ -276,7 +277,7 @@ npm run smoke
 ## Before Open Sourcing
 
 - rotate any bot tokens used during development
-- clear local state in `data/` before the first commit
+- clear local state in `STATE_FILE` before the first commit
 
 ## License
 
@@ -284,7 +285,7 @@ MIT
 
 ## State model
 
-- sessions are persisted in `STATE_FILE`
+- sessions are persisted in `STATE_FILE` (default: OS app-data dir; older `./data/state.json` installs are still read as a fallback and migrate on next write)
 - each session stores:
   - label
   - cwd

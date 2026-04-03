@@ -13,7 +13,9 @@ import { TelegramClient, buildForumTopicUrl } from "./telegram.js";
 
 const botConfig = getBotConfig();
 const runtimeConfig = getRuntimeConfig();
-const store = new StateStore(botConfig.stateFile);
+const store = new StateStore(botConfig.stateFile, {
+  fallbackReadPaths: botConfig.stateFallbackReadPaths,
+});
 const telegram = new TelegramClient({
   token: botConfig.telegramToken,
   apiBaseUrl: botConfig.telegramApiBaseUrl,

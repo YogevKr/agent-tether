@@ -121,6 +121,57 @@ test("When upserting an indexed session, then existing topic binding is preserve
   assert.equal(session?.status, "bound");
 });
 
+test("When the primary state file moves, then legacy topic bindings still load and migrate on write", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-store-"));
+  const legacyPath = path.join(tempDir, "project", "data", "state.json");
+  const primaryPath = path.join(tempDir, "app-state", "state.json");
+
+  await fs.mkdir(path.dirname(legacyPath), { recursive: true });
+  await fs.writeFile(
+    legacyPath,
+    JSON.stringify({
+      sessions: {
+        "session-migrated": {
+          id: "session-migrated",
+          label: "Deploy",
+          threadId: "thread-migrated",
+          cwd: "/repo",
+          createdAt: "2026-04-02T10:00:00.000Z",
+          updatedAt: "2026-04-02T10:00:00.000Z",
+          status: "bound",
+          forumChatId: "-1001",
+          topicId: 17,
+          topicName: "Deploy",
+          topicLink: "https://t.me/c/1001/17",
+        },
+      },
+      topicBindings: {},
+      jobs: {},
+      hosts: {},
+    }),
+  );
+
+  const store = new StateStore(primaryPath, {
+    fallbackReadPaths: [legacyPath],
+  });
+
+  const restored = await store.getSessionByTopic("-1001", 17);
+
+  assert.equal(restored?.id, "session-migrated");
+  assert.equal(restored?.status, "bound");
+
+  await store.updateSession("session-migrated", {
+    latestAssistantMessage: "Still bound after deploy.",
+    updatedAt: "2026-04-02T10:05:00.000Z",
+  });
+
+  const migrated = JSON.parse(await fs.readFile(primaryPath, "utf8"));
+
+  assert.equal(migrated.sessions["session-migrated"]?.topicId, 17);
+  assert.equal(migrated.sessions["session-migrated"]?.latestAssistantMessage, "Still bound after deploy.");
+  assert.equal(migrated.topicBindings["-1001:17"], "session-migrated");
+});
+
 test("When pulling queued jobs, then busy sessions are skipped until they become idle", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-store-"));
   const store = new StateStore(path.join(tempDir, "state.json"));

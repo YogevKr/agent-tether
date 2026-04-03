@@ -1,4 +1,4 @@
-import { getCodexConfig, getStateFile } from "./config.js";
+import { getCodexConfig, getStateStoreConfig } from "./config.js";
 import { applyHookEvent, stopHookResponse } from "./hook-index.js";
 import { StateStore } from "./state-store.js";
 
@@ -15,7 +15,10 @@ async function main() {
     if (codexConfig.hubUrl) {
       await postHookToHub(codexConfig.hubUrl, codexConfig.hubToken, enrichedInput);
     } else {
-      const store = new StateStore(getStateFile());
+      const stateStore = getStateStoreConfig();
+      const store = new StateStore(stateStore.filePath, {
+        fallbackReadPaths: stateStore.fallbackReadPaths,
+      });
       await applyHookEvent(store, enrichedInput);
     }
   } catch (error) {

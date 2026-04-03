@@ -9,8 +9,13 @@ const EMPTY_STATE = {
 };
 
 export class StateStore {
-  constructor(filePath) {
+  constructor(filePath, { fallbackReadPaths = [] } = {}) {
     this.filePath = filePath;
+    this.fallbackReadPaths = [...new Set(
+      fallbackReadPaths
+        .map((candidate) => String(candidate || ""))
+        .filter((candidate) => candidate && candidate !== filePath),
+    )];
     this.pendingOperation = Promise.resolve();
   }
 
@@ -407,16 +412,20 @@ export class StateStore {
   }
 
   async readFromDisk() {
-    try {
-      const content = await fs.readFile(this.filePath, "utf8");
-      return normalizeState(JSON.parse(content));
-    } catch (error) {
-      if (error.code === "ENOENT") {
-        return cloneEmptyState();
-      }
+    for (const candidate of [this.filePath, ...this.fallbackReadPaths]) {
+      try {
+        const content = await fs.readFile(candidate, "utf8");
+        return normalizeState(JSON.parse(content));
+      } catch (error) {
+        if (error.code === "ENOENT") {
+          continue;
+        }
 
-      throw error;
+        throw error;
+      }
     }
+
+    return cloneEmptyState();
   }
 
   async writeToDisk(state) {

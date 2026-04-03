@@ -10,7 +10,9 @@ const telegram = new TelegramClient({
   token: botConfig.telegramToken,
   apiBaseUrl: botConfig.telegramApiBaseUrl,
 });
-const store = new StateStore(botConfig.stateFile);
+const store = new StateStore(botConfig.stateFile, {
+  fallbackReadPaths: botConfig.stateFallbackReadPaths,
+});
 const hubServer = createHubServer({
   botConfig,
   codexConfig,

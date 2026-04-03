@@ -1,4 +1,4 @@
-import { getRuntimeConfig, getStateFile } from "./config.js";
+import { getRuntimeConfig, getStateStoreConfig } from "./config.js";
 import { applyHookEvent, stopHookResponse } from "./hook-index.js";
 import { StateStore } from "./state-store.js";
 
@@ -15,7 +15,10 @@ async function main() {
     if (runtimeConfig.hubUrl) {
       await postHookToHub(runtimeConfig.hubUrl, runtimeConfig.hubToken, enrichedInput);
     } else {
-      const store = new StateStore(getStateFile());
+      const stateStore = getStateStoreConfig();
+      const store = new StateStore(stateStore.filePath, {
+        fallbackReadPaths: stateStore.fallbackReadPaths,
+      });
       await applyHookEvent(store, enrichedInput);
     }
   } catch (error) {

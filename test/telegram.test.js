@@ -63,7 +63,8 @@ test("When markdown includes nested lists, URLs with parentheses, or unmatched b
 
   assert.equal(chunks.length, 1);
   assert.match(chunks[0], /• outer item/);
-  assert.match(chunks[0], /&nbsp;&nbsp;• inner item/);
+  assert.ok(!chunks[0].includes("&nbsp;"));
+  assert.match(chunks[0], /&#160;&#160;• inner item/);
   assert.match(chunks[0], /<a href="https:\/\/example\.com\/spec_\(v2\)">Spec<\/a>/);
   assert.match(chunks[0], /Literal `backtick stays open/);
 });

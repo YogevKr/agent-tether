@@ -12,6 +12,8 @@ export const PROJECT_ROOT = path.resolve(
 loadEnvFiles(PROJECT_ROOT);
 
 export function getBotConfig() {
+  const stateStore = getStateStoreConfig();
+
   return {
     telegramToken: requireEnv("TELEGRAM_BOT_TOKEN"),
     telegramApiBaseUrl:
@@ -20,7 +22,8 @@ export function getBotConfig() {
       process.env.AUTHORIZED_TELEGRAM_USER_IDS || process.env.AUTHORIZED_CHAT_IDS,
     ),
     forumChatId: requireEnv("TELEGRAM_FORUM_CHAT_ID"),
-    stateFile: getStateFile(),
+    stateFile: stateStore.filePath,
+    stateFallbackReadPaths: stateStore.fallbackReadPaths,
     pollTimeoutSeconds: parsePositiveInt(
       process.env.POLL_TIMEOUT_SECONDS,
       30,
@@ -136,7 +139,24 @@ export function getLegacyCodexConfig() {
 }
 
 export function getStateFile() {
-  return resolveProjectPath(process.env.STATE_FILE || "./data/state.json");
+  return getStateStoreConfig().filePath;
+}
+
+export function getStateStoreConfig() {
+  if (process.env.STATE_FILE) {
+    return {
+      filePath: resolveProjectPath(process.env.STATE_FILE),
+      fallbackReadPaths: [],
+    };
+  }
+
+  const filePath = getDefaultStateFile();
+  const legacyFilePath = getLegacyStateFile();
+
+  return {
+    filePath,
+    fallbackReadPaths: filePath === legacyFilePath ? [] : [legacyFilePath],
+  };
 }
 
 export function assertAuthorizedUser(userId, authorizedUserIds) {
@@ -186,6 +206,32 @@ function resolveProjectPath(filePath) {
   }
 
   return path.resolve(PROJECT_ROOT, filePath);
+}
+
+function getDefaultStateFile() {
+  return path.join(getDefaultStateDir(), "state.json");
+}
+
+function getLegacyStateFile() {
+  return resolveProjectPath("./data/state.json");
+}
+
+function getDefaultStateDir() {
+  if (process.platform === "darwin") {
+    return path.join(os.homedir(), "Library", "Application Support", "agent-tether");
+  }
+
+  if (process.platform === "win32") {
+    return path.join(
+      process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"),
+      "agent-tether",
+    );
+  }
+
+  return path.join(
+    process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state"),
+    "agent-tether",
+  );
 }
 
 function resolveExistingDir(dirPath, envName) {

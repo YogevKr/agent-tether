@@ -328,7 +328,7 @@ function renderIndentedText(line) {
 
 function renderIndent(spacing) {
   const normalized = String(spacing || "").replace(/\t/g, "  ");
-  return normalized ? "&nbsp;".repeat(normalized.length) : "";
+  return normalized ? "&#160;".repeat(normalized.length) : "";
 }
 
 function renderInline(text) {
