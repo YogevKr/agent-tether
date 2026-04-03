@@ -1,3 +1,5 @@
+import { renderTelegramMarkdownChunks } from "./telegram-markdown.js";
+
 const TELEGRAM_LIMIT = 4096;
 
 export class TelegramClient {
@@ -126,39 +128,46 @@ export class TelegramClient {
   }
 
   async sendLongMessage(chatId, text, options = {}) {
-    const chunks = splitTelegramText(text);
-    const sent = [];
+    return sendMessageChunks(this, chatId, splitTelegramText(text), options);
+  }
 
-    for (const chunk of chunks) {
-      sent.push(await this.sendMessage(chatId, chunk, options));
-    }
+  async sendMarkdownMessage(chatId, markdown, options = {}) {
+    const { prefixText = "", ...requestOptions } = options;
 
-    return sent;
+    return sendMessageChunks(
+      this,
+      chatId,
+      renderTelegramMarkdownChunks({
+        markdown,
+        prefixText,
+      }),
+      {
+        ...requestOptions,
+        parse_mode: "HTML",
+      },
+    );
   }
 
   async replaceProgressMessage(chatId, progressMessage, text, options = {}) {
-    const chunks = splitTelegramText(text);
+    return replaceMessageChunks(this, chatId, progressMessage, splitTelegramText(text), options);
+  }
 
-    if (progressMessage) {
-      try {
-        await this.editMessage(
-          chatId,
-          progressMessage.message_id,
-          chunks[0],
-          options,
-        );
-      } catch (error) {
-        if (!String(error.message).includes("message is not modified")) {
-          await this.sendMessage(chatId, chunks[0], options);
-        }
-      }
-    } else {
-      await this.sendMessage(chatId, chunks[0], options);
-    }
+  async replaceProgressMessageWithMarkdown(chatId, progressMessage, markdown, options = {}) {
+    const { prefixText = "", ...requestOptions } = options;
 
-    for (const chunk of chunks.slice(1)) {
-      await this.sendMessage(chatId, chunk, options);
-    }
+    return replaceMessageChunks(
+      this,
+      chatId,
+      progressMessage,
+      renderTelegramMarkdownChunks({
+        markdown,
+        prefixText,
+      }),
+      {
+        ...requestOptions,
+        parse_mode: "HTML",
+      },
+    );
   }
 
   async downloadFile(filePath) {
@@ -242,6 +251,39 @@ export function splitTelegramText(text, limit = TELEGRAM_LIMIT) {
   }
 
   return chunks;
+}
+
+async function sendMessageChunks(client, chatId, chunks, options = {}) {
+  const sent = [];
+
+  for (const chunk of chunks) {
+    sent.push(await client.sendMessage(chatId, chunk, options));
+  }
+
+  return sent;
+}
+
+async function replaceMessageChunks(client, chatId, progressMessage, chunks, options = {}) {
+  if (progressMessage) {
+    try {
+      await client.editMessage(
+        chatId,
+        progressMessage.message_id,
+        chunks[0],
+        options,
+      );
+    } catch (error) {
+      if (!String(error.message).includes("message is not modified")) {
+        await client.sendMessage(chatId, chunks[0], options);
+      }
+    }
+  } else {
+    await client.sendMessage(chatId, chunks[0], options);
+  }
+
+  for (const chunk of chunks.slice(1)) {
+    await client.sendMessage(chatId, chunk, options);
+  }
 }
 
 function normalizeInternalChatId(chatId) {

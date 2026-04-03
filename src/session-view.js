@@ -383,7 +383,11 @@ export function buildTopicKeyboard(
   };
 }
 
-export function formatTopicBootstrap(session, topicLink) {
+export function formatTopicBootstrapHeader(session, topicLink) {
+  return formatTopicBootstrapHeaderLines(session, topicLink).join("\n");
+}
+
+function formatTopicBootstrapHeaderLines(session, topicLink) {
   const providerName = formatProviderName(session.provider);
   const lines = [
     `Session: ${session.label}`,
@@ -404,11 +408,9 @@ export function formatTopicBootstrap(session, topicLink) {
   if (session.latestAssistantMessage) {
     lines.push("");
     lines.push(`Latest ${providerName} reply:`);
-    lines.push("");
-    lines.push(session.latestAssistantMessage);
   }
 
-  return lines.join("\n");
+  return lines;
 }
 
 export function formatSessionDetails(session) {
@@ -435,13 +437,11 @@ export function formatSessionDetails(session) {
   ].join("\n");
 }
 
-export function formatLatestReply(session) {
+export function formatLatestReplyHeader(session) {
   return [
     `Latest ${formatProviderName(session.provider)} reply`,
     `session: ${session.label}`,
     `state: ${session.status}`,
-    "",
-    session.latestAssistantMessage || "No assistant reply saved yet.",
   ].join("\n");
 }
 

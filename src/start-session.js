@@ -7,7 +7,7 @@ import {
   getRuntimeConfig,
 } from "./config.js";
 import { runAgentTurn } from "./agent-runtime.js";
-import { formatTopicBootstrap, toTopicName } from "./session-view.js";
+import { formatTopicBootstrapHeader, toTopicName } from "./session-view.js";
 import { StateStore } from "./state-store.js";
 import { TelegramClient, buildForumTopicUrl } from "./telegram.js";
 
@@ -95,14 +95,23 @@ async function createTopicForSession(session) {
     toTopicName(session.label),
   );
   const topicLink = buildForumTopicUrl(forumChat, topic.message_thread_id);
-  const bootstrapText = formatTopicBootstrap(session, topicLink);
-  const bootstrapMessages = await telegram.sendLongMessage(
-    forumChat.id,
-    bootstrapText,
-    {
-      message_thread_id: topic.message_thread_id,
-    },
-  );
+  const bootstrapText = formatTopicBootstrapHeader(session, topicLink);
+  const bootstrapMessages = session.latestAssistantMessage
+    ? await telegram.sendMarkdownMessage(
+        forumChat.id,
+        session.latestAssistantMessage,
+        {
+          message_thread_id: topic.message_thread_id,
+          prefixText: bootstrapText,
+        },
+      )
+    : await telegram.sendLongMessage(
+        forumChat.id,
+        bootstrapText,
+        {
+          message_thread_id: topic.message_thread_id,
+        },
+      );
 
   return store.bindSession(session.id, {
     forumChatId: forumChat.id,

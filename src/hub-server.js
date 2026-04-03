@@ -71,26 +71,39 @@ export function createHubServer({
     if (job.chatId && !isCancelled) {
       try {
         if (job.progressMessageId) {
-          await telegram.replaceProgressMessage(
-            job.chatId,
-            { message_id: job.progressMessageId },
-            isFailure
-              ? `${formatProviderName(session.provider)} failed.\n\n${payload.error}`
-              : payload.message,
-            {
-              message_thread_id: job.messageThreadId,
-            },
-          );
+          if (isFailure) {
+            await telegram.replaceProgressMessage(
+              job.chatId,
+              { message_id: job.progressMessageId },
+              `${formatProviderName(session.provider)} failed.\n\n${payload.error}`,
+              {
+                message_thread_id: job.messageThreadId,
+              },
+            );
+          } else {
+            await telegram.replaceProgressMessageWithMarkdown(
+              job.chatId,
+              { message_id: job.progressMessageId },
+              payload.message,
+              {
+                message_thread_id: job.messageThreadId,
+              },
+            );
+          }
         } else {
-          await telegram.sendLongMessage(
-            job.chatId,
-            isFailure
-              ? `${formatProviderName(session.provider)} failed.\n\n${payload.error}`
-              : payload.message,
-            {
+          if (isFailure) {
+            await telegram.sendLongMessage(
+              job.chatId,
+              `${formatProviderName(session.provider)} failed.\n\n${payload.error}`,
+              {
+                message_thread_id: job.messageThreadId,
+              },
+            );
+          } else {
+            await telegram.sendMarkdownMessage(job.chatId, payload.message, {
               message_thread_id: job.messageThreadId,
-            },
-          );
+            });
+          }
         }
       } catch (deliveryError) {
         logger.error(deliveryError);

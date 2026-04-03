@@ -18,11 +18,11 @@ import {
   dmHelpText,
   formatQueuePanel,
   formatDmStatus,
-  formatLatestReply,
+  formatLatestReplyHeader,
   formatProviderName,
   formatSessionDetails,
   formatSessionsPanel,
-  formatTopicBootstrap,
+  formatTopicBootstrapHeader,
   toTopicName,
   topicHelpText,
 } from "./session-view.js";
@@ -1442,15 +1442,25 @@ export function createRelayApp({
       toTopicName(session.label),
     );
     const topicLink = buildForumTopicUrl(forumChat, topic.message_thread_id);
-    const bootstrapText = formatTopicBootstrap(session, topicLink);
-    const bootstrapMessages = await telegram.sendLongMessage(
-      forumChat.id,
-      bootstrapText,
-      {
-        message_thread_id: topic.message_thread_id,
-        reply_markup: buildTopicKeyboard(session, topicKeyboardActions()),
-      },
-      );
+    const bootstrapText = formatTopicBootstrapHeader(session, topicLink);
+    const bootstrapMessages = session.latestAssistantMessage
+      ? await telegram.sendMarkdownMessage(
+          forumChat.id,
+          session.latestAssistantMessage,
+          {
+            message_thread_id: topic.message_thread_id,
+            reply_markup: buildTopicKeyboard(session, topicKeyboardActions()),
+            prefixText: bootstrapText,
+          },
+        )
+      : await telegram.sendLongMessage(
+          forumChat.id,
+          bootstrapText,
+          {
+            message_thread_id: topic.message_thread_id,
+            reply_markup: buildTopicKeyboard(session, topicKeyboardActions()),
+          },
+        );
 
     return store.bindSession(session.id, {
       forumChatId: forumChat.id,
@@ -1633,19 +1643,31 @@ export function createRelayApp({
       return;
     }
 
-    await telegram.sendLongMessage(
-      job.chatId,
-      isFailure
-        ? `${formatProviderName(session.provider || codexConfig.defaultProvider || "codex")} failed.\n\n${payload.error}`
-        : payload.message,
-      {
-        message_thread_id: job.messageThreadId,
-      },
-    );
+    if (isFailure) {
+      await telegram.sendLongMessage(
+        job.chatId,
+        `${formatProviderName(session.provider || codexConfig.defaultProvider || "codex")} failed.\n\n${payload.error}`,
+        {
+          message_thread_id: job.messageThreadId,
+        },
+      );
+      return;
+    }
+
+    await telegram.sendMarkdownMessage(job.chatId, payload.message, {
+      message_thread_id: job.messageThreadId,
+    });
   }
 
   async function sendLatestReply(chatId, session, options = {}) {
-    await telegram.sendLongMessage(chatId, formatLatestReply(session), options);
+    await telegram.sendMarkdownMessage(
+      chatId,
+      session.latestAssistantMessage || "No assistant reply saved yet.",
+      {
+        ...options,
+        prefixText: formatLatestReplyHeader(session),
+      },
+    );
   }
 
   async function formatSessionQueuePanel(session) {

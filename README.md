@@ -163,7 +163,7 @@ After the next hook event, that session appears in Telegram `/sessions` with its
 - Topic messages can be plain text, images, documents, or voice notes
 - Accepted topic prompts get a best-effort 👀 reaction immediately
 - Topic control messages include buttons for `Status`, `Queue`, `Stop`, `Latest`, `Detach`, and `Archive`
-- Telegram now posts only the final reply for each turn
+- Telegram now posts only the final reply for each turn, with Markdown rendered in Telegram
 - Session lists are sorted by newest `updatedAt` first and paginated 5 per page
 - Slash commands still work, but normal use should not require typing them
 
@@ -229,7 +229,7 @@ Inside a bound forum topic:
 - images are downloaded and passed through to Codex as image inputs
 - documents are downloaded into a temporary attachment directory and referenced in the prompt context
 - voice notes are downloaded, transcribed with `whisper`, and attached with the transcript
-- Telegram sends the final reply after the turn completes
+- Telegram sends the final reply after the turn completes, preserving Markdown formatting
 - `/queue` shows the running turn plus queued Telegram prompts
 - `/stop` aborts the current Telegram-run turn and clears queued Telegram prompts
 - `/status` shows session details

@@ -616,10 +616,11 @@ test("When a topic keyboard latest button is tapped, then relay resends the late
     },
   });
 
-  const sent = telegram.calls.sendLongMessage.at(-1);
+  const sent = telegram.calls.sendMarkdownMessage.at(-1);
   const answer = telegram.calls.answerCallbackQuery.at(-1);
 
   assert.match(sent.text, /Latest from button/);
+  assert.match(sent.options.prefixText, /^Latest Codex reply/);
   assert.equal(sent.options.message_thread_id, 15);
   assert.ok(sent.options.reply_markup);
   assert.equal(answer.options.text, "Latest reply sent.");
@@ -782,7 +783,7 @@ test("When a topic message continues a bound session, then relay sends only the 
   await app.waitForIdle();
 
   const session = await store.getSession("session-2");
-  const finalMessage = telegram.calls.sendLongMessage.at(-1);
+  const finalMessage = telegram.calls.sendMarkdownMessage.at(-1);
 
   assert.equal(session?.threadId, "thread-2");
   assert.equal(session?.latestAssistantMessage, "Final reply");
@@ -867,7 +868,7 @@ test("When a second topic prompt arrives while Codex is still running, then repl
   releaseFirstTurn();
   await app.waitForIdle();
 
-  const replies = telegram.calls.sendLongMessage.map((call) => call.text);
+  const replies = telegram.calls.sendMarkdownMessage.map((call) => call.text);
 
   assert.deepEqual(replies, ["First reply", "Second reply"]);
   assert.equal(telegram.calls.replaceProgressMessage.length, 0);
@@ -979,7 +980,7 @@ test("When a Claude topic turn runs without a saved model, then the Claude provi
   assert.equal(runCalls.length, 1);
   assert.equal(runCalls[0].provider, "claude");
   assert.equal(runCalls[0].model, "claude-sonnet-4-5");
-  assert.equal(telegram.calls.sendLongMessage.at(-1).text, "Claude final reply");
+  assert.equal(telegram.calls.sendMarkdownMessage.at(-1).text, "Claude final reply");
 });
 
 test("When /queue is requested in a bound topic, then relay shows running and queued prompts", async () => {
@@ -1265,8 +1266,10 @@ function createFakeTelegram({ files = {} } = {}) {
     getFile: [],
     replaceProgressMessage: [],
     reopenForumTopic: [],
+    replaceProgressMessageWithMarkdown: [],
     setMessageReaction: [],
     sendChatAction: [],
+    sendMarkdownMessage: [],
     sendLongMessage: [],
     sendMessage: [],
   };
@@ -1370,8 +1373,28 @@ function createFakeTelegram({ files = {} } = {}) {
       calls.sendLongMessage.push({ chatId, text, options, message });
       return [message];
     },
+    async sendMarkdownMessage(chatId, text, options = {}) {
+      const message = {
+        message_id: nextMessageId,
+        chat: { id: chatId },
+        text,
+      };
+
+      nextMessageId += 1;
+      calls.sendMarkdownMessage.push({ chatId, text, options, message });
+      return [message];
+    },
     async replaceProgressMessage(chatId, progressMessage, text, options = {}) {
       calls.replaceProgressMessage.push({
+        chatId,
+        progressMessage,
+        text,
+        options,
+      });
+      return true;
+    },
+    async replaceProgressMessageWithMarkdown(chatId, progressMessage, text, options = {}) {
+      calls.replaceProgressMessageWithMarkdown.push({
         chatId,
         progressMessage,
         text,
