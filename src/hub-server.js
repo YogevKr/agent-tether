@@ -24,6 +24,14 @@ export function createHubServer({
       throw error;
     }
 
+    if (job.status === "completed" || job.status === "failed" || job.status === "cancelled") {
+      return {
+        ok: true,
+        alreadyFinalized: true,
+        sessionId: job.sessionId || "",
+      };
+    }
+
     const finishedAt = now();
     const isCancelled = Boolean(payload.cancelled) || Boolean(job.cancelRequestedAt);
     const isFailure = !isCancelled && Boolean(payload.error);
@@ -201,6 +209,26 @@ export function createHubServer({
         return sendJson(response, 200, { job, session });
       }
 
+      if (request.method === "POST" && request.url?.match(/^\/api\/hosts\/[^/]+\/recover$/)) {
+        assertAuthorized(request, botConfig.hubToken);
+        const hostId = decodeURIComponent(request.url.split("/")[3] || "");
+        const recovery = await store.recoverInterruptedRuns({
+          hostId,
+          now: now(),
+          errorMessage: "Interrupted by worker restart.",
+        });
+
+        for (const sessionId of recovery.recoveredSessionIds) {
+          await syncTopicRunningIndicator(sessionId);
+        }
+
+        return sendJson(response, 200, {
+          ok: true,
+          recoveredJobCount: recovery.recoveredJobIds.length,
+          recoveredSessionIds: recovery.recoveredSessionIds,
+        });
+      }
+
       if (request.method === "GET" && request.url?.match(/^\/api\/jobs\/[^/]+$/)) {
         assertAuthorized(request, botConfig.hubToken);
         const jobId = request.url.split("/")[3];
@@ -335,6 +363,19 @@ export function createHubServer({
 
       await syncTopicRunningIndicator(sessionId);
       return outcome;
+    },
+    async recoverHostRuns(hostId, { errorMessage = "Interrupted before completion." } = {}) {
+      const recovery = await store.recoverInterruptedRuns({
+        hostId,
+        now: now(),
+        errorMessage,
+      });
+
+      for (const sessionId of recovery.recoveredSessionIds) {
+        await syncTopicRunningIndicator(sessionId);
+      }
+
+      return recovery;
     },
     async requestDirectoryBrowse(hostId, { directoryPath, rootPath, timeoutMs = 8000 }) {
       const browseJob = await store.createJob({

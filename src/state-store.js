@@ -362,6 +362,70 @@ export class StateStore {
     });
   }
 
+  async recoverInterruptedRuns({
+    hostId = "",
+    now = new Date().toISOString(),
+    errorMessage = "Interrupted before completion.",
+  } = {}) {
+    return this.runExclusive(async () => {
+      const state = await this.readFromDisk();
+      const targetHostId = String(hostId || "");
+      const recoveredJobIds = [];
+      const recoveredSessionIds = new Set();
+
+      for (const [jobId, job] of Object.entries(state.jobs)) {
+        if (job.status !== "running") {
+          continue;
+        }
+
+        if (targetHostId && job.hostId !== targetHostId) {
+          continue;
+        }
+
+        state.jobs[jobId] = normalizeJob({
+          ...job,
+          status: "failed",
+          updatedAt: now,
+          completedAt: now,
+          error: job.error || errorMessage,
+        });
+        recoveredJobIds.push(jobId);
+
+        if (job.kind === "run-turn" && job.sessionId) {
+          recoveredSessionIds.add(job.sessionId);
+        }
+      }
+
+      for (const sessionId of recoveredSessionIds) {
+        const session = state.sessions[sessionId];
+
+        if (!session || !session.isBusy) {
+          continue;
+        }
+
+        if (session.activeRunSource && session.activeRunSource !== "telegram") {
+          continue;
+        }
+
+        state.sessions[sessionId] = normalizeSession({
+          ...session,
+          isBusy: false,
+          activeRunSource: "",
+          updatedAt: now,
+        });
+      }
+
+      if (recoveredJobIds.length > 0) {
+        await this.writeToDisk(state);
+      }
+
+      return {
+        recoveredJobIds,
+        recoveredSessionIds: [...recoveredSessionIds],
+      };
+    });
+  }
+
   async pullQueuedJob(hostId, { now = new Date().toISOString() } = {}) {
     return this.runExclusive(async () => {
       const state = await this.readFromDisk();

@@ -353,3 +353,66 @@ test("When stopping a session, then queued jobs are cancelled and the running jo
   assert.equal(running?.cancelRequestedAt, "2026-04-02T10:03:00.000Z");
   assert.equal(queued?.status, "cancelled");
 });
+
+test("When recovering interrupted runs for one host, then running jobs fail and Telegram-run sessions are released", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-store-"));
+  const store = new StateStore(path.join(tempDir, "state.json"));
+
+  await store.saveSession({
+    id: "session-recover-1",
+    label: "Recover me",
+    cwd: "/repo",
+    hostId: "mbp",
+    isBusy: true,
+    activeRunSource: "telegram",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+  });
+  await store.saveSession({
+    id: "session-recover-2",
+    label: "Leave me",
+    cwd: "/repo",
+    hostId: "mini",
+    isBusy: true,
+    activeRunSource: "telegram",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+  });
+  await store.createJob({
+    id: "job-recover-1",
+    sessionId: "session-recover-1",
+    hostId: "mbp",
+    prompt: "hello",
+    status: "running",
+    createdAt: "2026-04-02T10:01:00.000Z",
+    updatedAt: "2026-04-02T10:01:00.000Z",
+  });
+  await store.createJob({
+    id: "job-recover-2",
+    sessionId: "session-recover-2",
+    hostId: "mini",
+    prompt: "still running",
+    status: "running",
+    createdAt: "2026-04-02T10:02:00.000Z",
+    updatedAt: "2026-04-02T10:02:00.000Z",
+  });
+
+  const recovery = await store.recoverInterruptedRuns({
+    hostId: "mbp",
+    now: "2026-04-02T10:03:00.000Z",
+    errorMessage: "Interrupted by restart.",
+  });
+  const recoveredSession = await store.getSession("session-recover-1");
+  const untouchedSession = await store.getSession("session-recover-2");
+  const recoveredJob = await store.getJob("job-recover-1");
+  const untouchedJob = await store.getJob("job-recover-2");
+
+  assert.deepEqual(recovery.recoveredJobIds, ["job-recover-1"]);
+  assert.deepEqual(recovery.recoveredSessionIds, ["session-recover-1"]);
+  assert.equal(recoveredSession?.isBusy, false);
+  assert.equal(recoveredSession?.activeRunSource, "");
+  assert.equal(recoveredJob?.status, "failed");
+  assert.equal(recoveredJob?.error, "Interrupted by restart.");
+  assert.equal(untouchedSession?.isBusy, true);
+  assert.equal(untouchedJob?.status, "running");
+});

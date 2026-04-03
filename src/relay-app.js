@@ -79,6 +79,16 @@ export function createRelayApp({
       );
     }
 
+    const recovery = await store.recoverInterruptedRuns({
+      hostId: botConfig.hostId,
+      now: now(),
+      errorMessage: "Interrupted by relay restart.",
+    });
+
+    for (const sessionId of recovery.recoveredSessionIds) {
+      await syncTopicRunningIndicator(sessionId);
+    }
+
     await maybeApplySessionRetention(true);
 
     return {
@@ -1932,9 +1942,12 @@ export function createRelayApp({
       statuses: ["queued", "running"],
     });
     const isRunning = jobs.some((job) => job.kind === "run-turn");
+    const baseName = String(session.topicName || session.label || "Agent session")
+      .replace(/^⏳\s*/, "")
+      .trim() || "Agent session";
     const targetName = isRunning
-      ? formatRunningTopicName(session.topicName || session.label)
-      : String(session.topicName || session.label || "Agent session").slice(0, 128);
+      ? formatRunningTopicName(baseName)
+      : baseName.slice(0, 128);
 
     try {
       await telegram.editForumTopic(session.forumChatId, session.topicId, {

@@ -15,6 +15,8 @@ const telegram = codexConfig.telegramToken
     })
   : null;
 const TYPING_HEARTBEAT_MS = 4000;
+const COMPLETE_RETRY_BASE_MS = 1000;
+const COMPLETE_RETRY_MAX_MS = 5000;
 
 async function main() {
   if (!codexConfig.hubUrl) {
@@ -24,6 +26,10 @@ async function main() {
   console.log(
     `worker up host=${codexConfig.hostId} hub=${codexConfig.hubUrl} concurrency=${codexConfig.workerConcurrency}`,
   );
+
+  await recoverInterruptedJobsOnHub().catch((error) => {
+    console.error("worker recovery failed:", formatError(error));
+  });
 
   await Promise.all(
     Array.from({ length: codexConfig.workerConcurrency }, () =>
@@ -95,7 +101,7 @@ async function executeJob(job, session) {
   try {
     if (job.kind === "browse-dir") {
       const entries = await listDirectories(job.browsePath, job.rootPath, codexConfig.startRoots);
-      await postJson(`${codexConfig.hubUrl}/api/jobs/${job.id}/complete`, {
+      await completeJobOnHub(job.id, {
         entries,
       });
       return;
@@ -120,13 +126,13 @@ async function executeJob(job, session) {
     });
 
     await progressReporter.close();
-    await postJson(`${codexConfig.hubUrl}/api/jobs/${job.id}/complete`, {
+    await completeJobOnHub(job.id, {
       threadId: result.threadId,
       message: result.message,
     });
   } catch (error) {
     await progressReporter.close();
-    await postJson(`${codexConfig.hubUrl}/api/jobs/${job.id}/complete`, {
+    await completeJobOnHub(job.id, {
       cancelled: controller.signal.aborted,
       error: controller.signal.aborted ? "Stopped from Telegram." : error.message,
     });
@@ -137,39 +143,89 @@ async function executeJob(job, session) {
   }
 }
 
-async function postJson(url, payload) {
+async function postJson(url, payload, { token = codexConfig.hubToken } = {}) {
   const response = await fetch(url, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      ...(codexConfig.hubToken ? { "x-relay-token": codexConfig.hubToken } : {}),
+      ...(token ? { "x-relay-token": token } : {}),
     },
     body: JSON.stringify(payload),
   });
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status} calling ${url}`);
+    const detail = await response.text().catch(() => "");
+    const error = new Error(detail || `HTTP ${response.status} calling ${url}`);
+    error.statusCode = response.status;
+    throw error;
   }
 
   return response.json();
 }
 
-async function getJson(url) {
+async function getJson(url, { token = codexConfig.hubToken } = {}) {
   const response = await fetch(url, {
     headers: {
-      ...(codexConfig.hubToken ? { "x-relay-token": codexConfig.hubToken } : {}),
+      ...(token ? { "x-relay-token": token } : {}),
     },
   });
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status} calling ${url}`);
+    const detail = await response.text().catch(() => "");
+    const error = new Error(detail || `HTTP ${response.status} calling ${url}`);
+    error.statusCode = response.status;
+    throw error;
   }
 
   return response.json();
 }
 
+export async function completeJobOnHub(
+  jobId,
+  payload,
+  {
+    hubUrl = codexConfig.hubUrl,
+    hubToken = codexConfig.hubToken,
+    sleep = defaultSleep,
+    logger = console,
+  } = {},
+) {
+  let delayMs = COMPLETE_RETRY_BASE_MS;
+  let attempt = 0;
+
+  while (true) {
+    try {
+      return await postJson(`${hubUrl}/api/jobs/${jobId}/complete`, payload, {
+        token: hubToken,
+      });
+    } catch (error) {
+      if (!shouldRetryHubRequest(error)) {
+        throw error;
+      }
+
+      attempt += 1;
+      logger.error(
+        `worker completion retry job=${jobId} attempt=${attempt}: ${error.message || error}`,
+      );
+      await sleep(delayMs);
+      delayMs = Math.min(delayMs * 2, COMPLETE_RETRY_MAX_MS);
+    }
+  }
+}
+
+async function recoverInterruptedJobsOnHub() {
+  return postJson(
+    `${codexConfig.hubUrl}/api/hosts/${encodeURIComponent(codexConfig.hostId)}/recover`,
+    {},
+  );
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function defaultSleep(ms) {
+  return sleep(ms);
 }
 
 function startTypingHeartbeat(job) {
@@ -315,6 +371,18 @@ function formatError(error) {
   }
 
   return parts.join("\n");
+}
+
+function shouldRetryHubRequest(error) {
+  if (!error) {
+    return true;
+  }
+
+  if (!error.statusCode) {
+    return true;
+  }
+
+  return error.statusCode === 408 || error.statusCode === 429 || error.statusCode >= 500;
 }
 
 async function listDirectories(directoryPath, rootPath, allowedRoots) {

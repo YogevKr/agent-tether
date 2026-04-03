@@ -1408,6 +1408,49 @@ test("When /stop is requested in a bound topic, then the running turn is aborted
   assert.equal(telegram.calls.sendLongMessage.length, 0);
 });
 
+test("When the relay starts after a local turn was interrupted, then the session is released from running state", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const app = createTestApp({ store, telegram });
+
+  await store.saveSession({
+    id: "recover-topic-1",
+    label: "Recover topic",
+    threadId: "thread-recover-topic-1",
+    cwd: "/repo",
+    hostId: "mbp",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+    status: "bound",
+    forumChatId: "-1001",
+    topicId: 24,
+    topicName: "⏳ Recover topic",
+    topicLink: "https://t.me/c/1001/24",
+    isBusy: true,
+    activeRunSource: "telegram",
+  });
+  await store.createJob({
+    id: "recover-job-1",
+    sessionId: "recover-topic-1",
+    hostId: "mbp",
+    prompt: "resume me",
+    status: "running",
+    createdAt: "2026-04-02T10:01:00.000Z",
+    updatedAt: "2026-04-02T10:01:00.000Z",
+  });
+
+  await app.initialize();
+
+  const session = await store.getSession("recover-topic-1");
+  const job = await store.getJob("recover-job-1");
+
+  assert.equal(session?.isBusy, false);
+  assert.equal(session?.activeRunSource, "");
+  assert.equal(job?.status, "failed");
+  assert.equal(job?.error, "Interrupted by relay restart.");
+  assert.equal(telegram.calls.editForumTopic.at(-1)?.options.name, "Recover topic");
+});
+
 test("When a topic message includes Telegram attachments, then relay downloads them and passes attachment context into the turn", async () => {
   const store = await createTempStore();
   const telegram = createFakeTelegram({
