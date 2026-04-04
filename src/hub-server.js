@@ -111,13 +111,20 @@ export function createHubServer({
       .replace(/^⏳\s*/, "")
       .trim() || "Agent session";
     const targetName = baseName.slice(0, 128);
+    const currentName = String(session.topicName || "").trim();
+
+    if (currentName === targetName) {
+      return;
+    }
 
     try {
       await telegram.editForumTopic(session.forumChatId, session.topicId, {
         name: targetName,
       });
     } catch (error) {
-      if (!String(error.message || "").toLowerCase().includes("not modified")) {
+      const message = String(error.message || "").toLowerCase();
+
+      if (!message.includes("not modified") && !message.includes("topic_id_invalid")) {
         logger.error(error);
       }
     }

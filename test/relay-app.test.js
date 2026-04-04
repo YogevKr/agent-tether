@@ -1073,7 +1073,7 @@ test("When a topic message continues a bound session, then relay sends only the 
   assert.equal(session?.latestAssistantMessage, "Final reply");
   assert.equal(telegram.calls.replaceProgressMessage.length, 0);
   assert.equal(finalMessage.text, "Final reply");
-  assert.deepEqual(topicNames, ["Streaming", "Streaming", "Streaming"]);
+  assert.deepEqual(topicNames, []);
   assert.deepEqual(telegram.calls.setMessageReaction.at(-1), {
     chatId: -1001,
     messageId: 1,
@@ -1275,8 +1275,7 @@ test("When a topic message targets a remote host session, then relay queues the 
   assert.equal(hubServer.calls[0].session.hostId, "desktop");
   assert.equal(hubServer.calls[0].payload.prompt, "continue remotely");
   assert.equal(hubServer.calls[0].payload.progressMessageId, undefined);
-  assert.equal(telegram.calls.editForumTopic.length, 1);
-  assert.equal(telegram.calls.editForumTopic[0]?.options.name, "Remote host");
+  assert.equal(telegram.calls.editForumTopic.length, 0);
   assert.deepEqual(telegram.calls.setMessageReaction.at(-1), {
     chatId: -1001,
     messageId: 1,
@@ -1586,7 +1585,7 @@ test("When the relay starts with an idle bound topic, then stale running indicat
 
   await app.initialize();
 
-  assert.equal(telegram.calls.editForumTopic.at(-1)?.options.name, "Idle topic");
+  assert.equal(telegram.calls.editForumTopic.length, 0);
 });
 
 test("When a topic message includes Telegram attachments, then relay downloads them and passes attachment context into the turn", async () => {
