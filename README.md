@@ -162,8 +162,8 @@ After the next hook event, that session appears in Telegram `/sessions` with its
 ## Telegram UX
 
 - General topic is button-first: `New Session`, `Sessions`, `Archived`, `Status`, `Help`
-- DM exposes the same management flow as fallback
-- `New Session` lets you choose provider, node, place, and folder, then opens a fresh topic
+- DM exposes the same management flow plus `Chat ID`
+- `New Session` lets you choose provider, node, place, and folder, with `Back`, `Back to Nodes`, and `Back to Places` navigation
 - Topic messages can be plain text, images, documents, or voice notes
 - Accepted topic prompts get a best-effort 👀 reaction immediately
 - Topic control messages include buttons for `Status`, `Queue`, `Stop`, `Latest`, `Show Steps` / `Hide Steps`, `Detach`, and `Archive`
@@ -219,11 +219,14 @@ npm run start-session -- --label "docs cleanup" --notify-chat 123456789 --prompt
 - row number: bind or open
 - `Details`
 - `Archive`
+- footer: `New Session`, `Archived`, `Refresh`, `Home`
 
 Inside `Details`:
 
 - `Show Steps` or `Hide Steps` toggles live intermediate-step updates for that session
 - `Latest Reply`
+- `Back`
+- `Archive` on open sessions or `Restore` on archived sessions
 
 `/archived` shows hidden sessions with:
 
@@ -241,10 +244,10 @@ Inside a bound forum topic:
 - voice notes are downloaded, transcribed with `whisper`, and attached with the transcript
 - Telegram sends only the final reply by default
 - `Show Steps` / `Hide Steps` is available directly on the bound-topic keyboard and in session details
-- If `Show Steps` is enabled for the session, Telegram posts a queued/progress message with commands, reasoning summaries, and draft reply text while the turn runs, then replaces it with the final reply
+- If `Show Steps` is enabled for the session, Telegram posts queued/progress updates as new messages while the turn runs, then posts the final reply separately
 - `/queue` shows the running turn plus queued Telegram prompts
+- `/status` includes the session details plus the current queue snapshot
 - `/stop` aborts the current Telegram-run turn and clears queued Telegram prompts
-- `/status` shows session details
 - `/latest` resends the latest assistant reply
 - `/reset` detaches the topic and returns the session to headless mode
 - `/archive` hides the session from the main list and closes the topic

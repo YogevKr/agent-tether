@@ -1,8 +1,8 @@
 export const MAX_PANEL_SESSIONS = 20;
 export const SESSIONS_PAGE_SIZE = 5;
 
-export function dmHelpText({ userId, forumTitle }) {
-  return [
+export function dmHelpText({ userId, forumTitle, includeChatId = true }) {
+  const lines = [
     "Agent Tether",
     "",
     `user_id: ${userId}`,
@@ -14,8 +14,13 @@ export function dmHelpText({ userId, forumTitle }) {
     "Sessions shows indexed local agent sessions.",
     "Archived shows hidden historical sessions.",
     "Status shows forum and session counts.",
-    "Chat ID shows your Telegram user id.",
-  ].join("\n");
+  ];
+
+  if (includeChatId) {
+    lines.push("Chat ID shows your Telegram user id.");
+  }
+
+  return lines.join("\n");
 }
 
 export function topicHelpText(session) {
@@ -124,6 +129,7 @@ export function buildSessionsKeyboard(
     archiveSession = (session) => `session:archive:${session.id}`,
     restoreSession = (session) => `session:restore:${session.id}`,
     goToPage = (targetMode, targetPage) => `sessions:page:${targetMode}:${targetPage}`,
+    goHome = () => "dm:home",
   } = {},
 ) {
   const cappedSessions = sessions.slice(0, limit);
@@ -210,15 +216,8 @@ export function buildSessionsKeyboard(
       callback_data: mode === "archived" ? "sessions:archived" : "sessions:refresh",
     },
     {
-      text: "Status",
-      callback_data: "dm:status",
-    },
-  ]);
-
-  inline_keyboard.push([
-    {
-      text: "Help",
-      callback_data: "dm:help",
+      text: "Home",
+      callback_data: goHome(),
     },
   ]);
 
@@ -238,26 +237,34 @@ export function buildSessionDetailKeyboard(
 ) {
   const inline_keyboard = [];
 
-  inline_keyboard.push([
-    session.status === "closed"
-      ? {
-          text: "Restore",
-          callback_data: restoreSession(session),
-        }
-      : session.status === "bound" && session.topicLink
-      ? {
-          text: "Open Topic",
-          url: session.topicLink,
-        }
-      : {
-          text: "Bind Topic",
-          callback_data: bindSession(session),
-        },
-    {
-      text: "Latest Reply",
-      callback_data: showLatestSessionReply(session),
-    },
-  ]);
+  if (session.status === "closed") {
+    inline_keyboard.push([
+      {
+        text: "Restore",
+        callback_data: restoreSession(session),
+      },
+      {
+        text: "Latest Reply",
+        callback_data: showLatestSessionReply(session),
+      },
+    ]);
+  } else {
+    inline_keyboard.push([
+      session.status === "bound" && session.topicLink
+        ? {
+            text: "Open Topic",
+            url: session.topicLink,
+          }
+        : {
+            text: "Bind Topic",
+            callback_data: bindSession(session),
+          },
+      {
+        text: "Latest Reply",
+        callback_data: showLatestSessionReply(session),
+      },
+    ]);
+  }
 
   inline_keyboard.push([
     {
@@ -267,32 +274,36 @@ export function buildSessionDetailKeyboard(
   ]);
 
   inline_keyboard.push([
-    session.status === "closed"
-      ? {
-          text: "Archived",
-          callback_data: "sessions:archived",
-        }
-      : {
+    ...(session.status === "closed"
+      ? []
+      : [{
           text: "Archive",
           callback_data: archiveSession(session),
-        },
+        }]),
     {
-      text: session.status === "closed" ? "Open Sessions" : "Back to Sessions",
+      text: "Back",
       callback_data: backToSessions(session),
-    },
-  ]);
-
-  inline_keyboard.push([
-    {
-      text: "New Session",
-      callback_data: "dm:new",
     },
   ]);
 
   return { inline_keyboard };
 }
 
-export function buildDmHomeKeyboard() {
+export function buildDmHomeKeyboard({ includeChatId = true } = {}) {
+  const statusRow = [
+    {
+      text: "Status",
+      callback_data: "dm:status",
+    },
+  ];
+
+  if (includeChatId) {
+    statusRow.push({
+      text: "Chat ID",
+      callback_data: "dm:chatid",
+    });
+  }
+
   return {
     inline_keyboard: [
       [
@@ -312,14 +323,7 @@ export function buildDmHomeKeyboard() {
         },
       ],
       [
-        {
-          text: "Status",
-          callback_data: "dm:status",
-        },
-        {
-          text: "Chat ID",
-          callback_data: "dm:chatid",
-        },
+        ...statusRow,
       ],
       [
         {

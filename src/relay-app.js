@@ -398,7 +398,7 @@ export function createRelayApp({
     const text = extractTelegramPrompt(message);
 
     if (isCommand(text, "start", botUsername) || isCommand(text, "help", botUsername)) {
-      await renderDmHome(chatId, null, { userId });
+      await renderDmHome(chatId, null, { userId, includeChatId: false });
       return;
     }
 
@@ -423,7 +423,7 @@ export function createRelayApp({
     }
 
     if (isCommand(text, "status", botUsername)) {
-      await renderDmStatus(chatId);
+      await renderDmStatus(chatId, null, { includeChatId: false });
       return;
     }
   }
@@ -451,7 +451,12 @@ export function createRelayApp({
 
     if (String(query.message.chat.id) === String(forumChat.id)) {
       if (isGeneralTopicId(topicId)) {
-        await handleControlCallbackQuery(query, { chatId, messageId, userId });
+        await handleControlCallbackQuery(query, {
+          chatId,
+          messageId,
+          userId,
+          includeChatId: false,
+        });
         return;
       }
 
@@ -466,10 +471,17 @@ export function createRelayApp({
       return;
     }
 
-    await handleControlCallbackQuery(query, { chatId, messageId, userId });
+    await handleControlCallbackQuery(query, {
+      chatId,
+      messageId,
+      userId,
+      includeChatId: true,
+    });
   }
 
-  async function handleControlCallbackQuery(query, { chatId, messageId, userId }) {
+  async function handleControlCallbackQuery(query, { chatId, messageId, userId, includeChatId }) {
+    const showChatId = includeChatId ?? shouldIncludeChatId(chatId);
+
     if (query.data === "dm:new") {
       await renderProviderPicker(chatId, messageId);
       await telegram.answerCallbackQuery(query.id, {
@@ -478,8 +490,16 @@ export function createRelayApp({
       return;
     }
 
+    if (query.data === "dm:home") {
+      await renderDmHome(chatId, messageId, { userId, includeChatId: showChatId });
+      await telegram.answerCallbackQuery(query.id, {
+        text: "Home loaded.",
+      });
+      return;
+    }
+
     if (query.data === "dm:help") {
-      await renderDmHome(chatId, messageId, { userId });
+      await renderDmHome(chatId, messageId, { userId, includeChatId: showChatId });
       await telegram.answerCallbackQuery(query.id, {
         text: "Help loaded.",
       });
@@ -495,7 +515,7 @@ export function createRelayApp({
     }
 
     if (query.data === "dm:status") {
-      await renderDmStatus(chatId, messageId);
+      await renderDmStatus(chatId, messageId, { includeChatId: showChatId });
       await telegram.answerCallbackQuery(query.id, {
         text: "Status loaded.",
       });
@@ -1251,16 +1271,21 @@ export function createRelayApp({
     });
   }
 
-  async function renderDmHome(chatId, messageId = null, { userId = chatId } = {}) {
+  async function renderDmHome(
+    chatId,
+    messageId = null,
+    { userId = chatId, includeChatId = shouldIncludeChatId(chatId) } = {},
+  ) {
     return editOrSend(
       chatId,
       messageId,
       dmHelpText({
         userId,
         forumTitle: forumChat.title || String(forumChat.id),
+        includeChatId,
       }),
       {
-        reply_markup: buildDmHomeKeyboard(),
+        reply_markup: buildDmHomeKeyboard({ includeChatId }),
       },
     );
   }
@@ -1284,7 +1309,7 @@ export function createRelayApp({
         [
           {
             text: "Back",
-            callback_data: "dm:help",
+            callback_data: "dm:home",
           },
         ],
       ],
@@ -1314,7 +1339,7 @@ export function createRelayApp({
         ].join("\n");
 
     const replyMarkup = hosts.length === 0
-      ? buildDmHomeKeyboard()
+      ? buildDmHomeKeyboard({ includeChatId: shouldIncludeChatId(chatId) })
       : {
           inline_keyboard: [
             ...hosts.map((host) => {
@@ -1330,7 +1355,7 @@ export function createRelayApp({
             }),
             [
               {
-                text: "Providers",
+                text: "Back",
                 callback_data: "dm:new",
               },
             ],
@@ -1349,7 +1374,7 @@ export function createRelayApp({
 
     if (!host) {
       return editOrSend(chatId, messageId, "Node not found. Start again from New Session.", {
-        reply_markup: buildDmHomeKeyboard(),
+        reply_markup: buildDmHomeKeyboard({ includeChatId: shouldIncludeChatId(chatId) }),
       });
     }
 
@@ -1370,7 +1395,7 @@ export function createRelayApp({
 
     rows.push([
       {
-        text: "Nodes",
+        text: "Back to Nodes",
         callback_data: `new:provider:${provider}`,
       },
     ]);
@@ -1475,15 +1500,15 @@ export function createRelayApp({
 
     rows.push([
       {
-        text: "Places",
+        text: "Back to Places",
         callback_data: `new:roots:${issueUiToken({
           provider: normalizeProviderChoice(codexConfig, context.provider),
           hostId: context.hostId,
         })}`,
       },
       {
-        text: "Providers",
-        callback_data: "dm:new",
+        text: "Back to Nodes",
+        callback_data: `new:provider:${normalizeProviderChoice(codexConfig, context.provider)}`,
       },
     ]);
 
@@ -1509,9 +1534,10 @@ export function createRelayApp({
     });
   }
 
-  async function renderDmStatus(chatId, messageId = null) {
+  async function renderDmStatus(chatId, messageId = null, { includeChatId } = {}) {
     await maybeApplySessionRetention();
     const sessions = await store.listSessions({ includeClosed: true });
+    const showChatId = includeChatId ?? shouldIncludeChatId(chatId);
     return editOrSend(
       chatId,
       messageId,
@@ -1520,7 +1546,7 @@ export function createRelayApp({
         sessions,
       }),
       {
-        reply_markup: buildDmHomeKeyboard(),
+        reply_markup: buildDmHomeKeyboard({ includeChatId: showChatId }),
       },
     );
   }
@@ -2273,16 +2299,24 @@ export function createRelayApp({
   }
 
   async function formatDetailedSessionStatus(session) {
-    const gitBranch = await getGitBranch(session.cwd);
-
-    if (!gitBranch) {
-      return formatSessionDetails(session);
-    }
-
-    return formatSessionDetails({
+    const [gitBranch, jobs] = await Promise.all([
+      getGitBranch(session.cwd),
+      store.listJobsForSession(session.id, {
+        statuses: ["queued", "running"],
+      }),
+    ]);
+    const sessionDetails = formatSessionDetails({
       ...session,
-      gitBranch,
+      ...(gitBranch ? { gitBranch } : {}),
     });
+
+    return [
+      sessionDetails,
+      formatQueuePanel({
+        session,
+        jobs,
+      }),
+    ].join("\n\n");
   }
 
   function sessionKeyboardActions({ mode = "open", page = 0 } = {}) {
@@ -2296,7 +2330,12 @@ export function createRelayApp({
       restoreSession: (session) => buildSessionActionData("restore", session, { mode, page }),
       backToSessions: () => `sessions:page:${mode}:${page}`,
       goToPage: (targetMode, targetPage) => `sessions:page:${targetMode}:${targetPage}`,
+      goHome: () => "dm:home",
     };
+  }
+
+  function shouldIncludeChatId(chatId) {
+    return String(chatId) !== String(forumChat.id);
   }
 
   function topicKeyboardActions() {

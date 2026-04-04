@@ -56,6 +56,9 @@ test("When /sessions is requested in DM, then relay shows create and open action
   assert.ok(buttons.some((button) => button.callback_data?.startsWith("session:")));
   assert.ok(buttons.some((button) => button.url === "https://t.me/c/1001/4"));
   assert.ok(buttons.some((button) => button.callback_data === "dm:new"));
+  assert.ok(buttons.some((button) => button.callback_data === "dm:home"));
+  assert.equal(buttons.some((button) => button.callback_data === "dm:status"), false);
+  assert.equal(buttons.some((button) => button.callback_data === "dm:help"), false);
   assert.deepEqual(primaryButtons.map((button) => button.text), ["1", "2"]);
 });
 
@@ -248,9 +251,12 @@ test("When session details toggle intermediate steps, then the setting is update
   const toggleButton = detailsPanel.options.reply_markup.inline_keyboard
     .flat()
     .find((button) => button.text === "Show Steps");
+  const detailButtons = detailsPanel.options.reply_markup.inline_keyboard.flat();
 
   assert.match(detailsPanel.text, /intermediate_steps: off/);
   assert.ok(toggleButton?.callback_data);
+  assert.ok(detailButtons.some((button) => button.text === "Back"));
+  assert.equal(detailButtons.some((button) => button.text === "New Session"), false);
 
   await app.handleUpdate({
     callback_query: {
@@ -302,6 +308,33 @@ test("When /start is requested in DM, then relay shows the home buttons", async 
   assert.ok(buttons.some((button) => button.callback_data === "dm:chatid"));
 });
 
+test("When /start is requested in the General topic, then relay shows the trimmed home buttons there", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const app = createTestApp({ store, telegram });
+
+  await app.initialize();
+  await app.handleUpdate({
+    message: {
+      text: "/start",
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: TEST_USER_ID },
+      message_thread_id: 1,
+    },
+  });
+
+  const sent = telegram.calls.sendMessage.at(-1);
+  const buttons = sent.options.reply_markup.inline_keyboard.flat();
+
+  assert.match(sent.text, /Agent Tether/);
+  assert.ok(buttons.some((button) => button.callback_data === "dm:sessions"));
+  assert.ok(buttons.some((button) => button.callback_data === "dm:archived"));
+  assert.ok(buttons.some((button) => button.callback_data === "dm:status"));
+  assert.ok(buttons.some((button) => button.callback_data === "dm:help"));
+  assert.equal(buttons.some((button) => button.callback_data === "dm:chatid"), false);
+  assert.doesNotMatch(sent.text, /Chat ID shows your Telegram user id/);
+});
+
 test("When /sessions is requested in the General topic, then relay shows the session management panel there", async () => {
   const store = await createTempStore();
   const telegram = createFakeTelegram();
@@ -334,6 +367,8 @@ test("When /sessions is requested in the General topic, then relay shows the ses
   assert.equal(sent.chatId, "-1001");
   assert.equal(sent.options.message_thread_id, undefined);
   assert.ok(buttons.some((button) => button.callback_data === "dm:new"));
+  assert.ok(buttons.some((button) => button.callback_data === "dm:home"));
+  assert.equal(buttons.some((button) => button.callback_data === "dm:status"), false);
 });
 
 test("When /new is requested in the General topic, then relay shows provider selection there", async () => {
@@ -466,6 +501,8 @@ test("When starting a new session from DM, then relay lets the user browse folde
   const providerPanel = telegram.calls.editMessage.at(-1);
   const providerButton = providerPanel.options.reply_markup.inline_keyboard[1][0];
 
+  assert.equal(providerPanel.options.reply_markup.inline_keyboard.at(-1)[0].text, "Back");
+
   await app.handleUpdate({
     callback_query: {
       id: "cb-provider",
@@ -480,6 +517,8 @@ test("When starting a new session from DM, then relay lets the user browse folde
 
   const hostPanel = telegram.calls.editMessage.at(-1);
   const hostButton = hostPanel.options.reply_markup.inline_keyboard[0][0];
+
+  assert.equal(hostPanel.options.reply_markup.inline_keyboard.at(-1)[0].text, "Back");
 
   await app.handleUpdate({
     callback_query: {
@@ -496,6 +535,8 @@ test("When starting a new session from DM, then relay lets the user browse folde
   const rootPanel = telegram.calls.editMessage.at(-1);
   const rootButton = rootPanel.options.reply_markup.inline_keyboard[0][0];
 
+  assert.equal(rootPanel.options.reply_markup.inline_keyboard.at(-1)[0].text, "Back to Nodes");
+
   await app.handleUpdate({
     callback_query: {
       id: "cb-root",
@@ -510,6 +551,10 @@ test("When starting a new session from DM, then relay lets the user browse folde
 
   const directoryPanel = telegram.calls.editMessage.at(-1);
   const subdirButton = directoryPanel.options.reply_markup.inline_keyboard[0][0];
+  const directoryFooter = directoryPanel.options.reply_markup.inline_keyboard.at(-1);
+
+  assert.equal(directoryFooter[0].text, "Back to Places");
+  assert.equal(directoryFooter[1].text, "Back to Nodes");
 
   await app.handleUpdate({
     callback_query: {
@@ -892,6 +937,17 @@ test("When /status is requested in a bound topic, then the git branch is shown w
     topicId: 17,
     topicName: "Topic status branch",
     topicLink: "https://t.me/c/1001/17",
+    isBusy: true,
+    activeRunSource: "local-cli",
+  });
+  await store.createJob({
+    id: "status-queue-job-1",
+    sessionId: "session-topic-status-branch-1",
+    hostId: "mbp",
+    prompt: "queued from status",
+    status: "queued",
+    createdAt: "2026-04-02T10:01:00.000Z",
+    updatedAt: "2026-04-02T10:01:00.000Z",
   });
 
   await app.initialize();
@@ -907,6 +963,11 @@ test("When /status is requested in a bound topic, then the git branch is shown w
   const sent = telegram.calls.sendMessage.at(-1);
 
   assert.match(sent.text, /branch: feature\/topic-status/);
+  assert.match(sent.text, /Queue: Topic status branch/);
+  assert.match(sent.text, /running: 0/);
+  assert.match(sent.text, /queued: 1/);
+  assert.match(sent.text, /queued from status/);
+  assert.match(sent.text, /Local CLI run is still active/);
 });
 
 test("When archive is tapped in a topic, then the session is archived and the topic is closed", async () => {
