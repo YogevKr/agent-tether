@@ -307,6 +307,7 @@ function createHubProgressReporter({ job, session }) {
       if (flushTimer) {
         clearTimeout(flushTimer);
         flushTimer = null;
+        flushPromise = flushPromise.then(flush);
       }
 
       await flushPromise;

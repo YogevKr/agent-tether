@@ -79,40 +79,18 @@ export function createHubServer({
 
     if (job.chatId && !isCancelled) {
       try {
-        if (job.progressMessageId) {
-          if (isFailure) {
-            await telegram.replaceProgressMessage(
-              job.chatId,
-              { message_id: job.progressMessageId },
-              `${formatProviderName(session.provider)} failed.\n\n${payload.error}`,
-              {
-                message_thread_id: job.messageThreadId,
-              },
-            );
-          } else {
-            await telegram.replaceProgressMessageWithMarkdown(
-              job.chatId,
-              { message_id: job.progressMessageId },
-              payload.message,
-              {
-                message_thread_id: job.messageThreadId,
-              },
-            );
-          }
-        } else {
-          if (isFailure) {
-            await telegram.sendLongMessage(
-              job.chatId,
-              `${formatProviderName(session.provider)} failed.\n\n${payload.error}`,
-              {
-                message_thread_id: job.messageThreadId,
-              },
-            );
-          } else {
-            await telegram.sendMarkdownMessage(job.chatId, payload.message, {
+        if (isFailure) {
+          await telegram.sendLongMessage(
+            job.chatId,
+            `${formatProviderName(session.provider)} failed.\n\n${payload.error}`,
+            {
               message_thread_id: job.messageThreadId,
-            });
-          }
+            },
+          );
+        } else {
+          await telegram.sendMarkdownMessage(job.chatId, payload.message, {
+            message_thread_id: job.messageThreadId,
+          });
         }
       } catch (deliveryError) {
         logger.error(deliveryError);
@@ -267,9 +245,8 @@ export function createHubServer({
 
         if (job.chatId && job.progressMessageId) {
           try {
-            await telegram.replaceProgressMessage(
+            await telegram.sendLongMessage(
               job.chatId,
-              { message_id: job.progressMessageId },
               formatProgressMessage(progressState),
               {
                 message_thread_id: job.messageThreadId,

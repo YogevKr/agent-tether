@@ -168,7 +168,7 @@ After the next hook event, that session appears in Telegram `/sessions` with its
 - Accepted topic prompts get a best-effort 👀 reaction immediately
 - Topic control messages include buttons for `Status`, `Queue`, `Stop`, `Latest`, `Show Steps` / `Hide Steps`, `Detach`, and `Archive`
 - Session details include a `Show Steps` / `Hide Steps` toggle
-- By default Telegram posts only the final reply for each turn; when steps are enabled for a session, Telegram shows a live intermediate-steps panel first and then replaces it with the final Markdown reply
+- By default Telegram posts only the final reply for each turn; when steps are enabled for a session, Telegram sends intermediate step updates as new messages and still posts the final Markdown reply separately
 - Session lists are sorted by newest `updatedAt` first and paginated 5 per page
 - Slash commands still work, but normal use should not require typing them
 

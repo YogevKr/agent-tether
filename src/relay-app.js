@@ -1700,12 +1700,12 @@ export function createRelayApp({
       };
     }
 
-    const progressMessage = { message_id: job.progressMessageId };
     const progressState = {
       ...createProgressState(session),
       ...(job.progressState || {}),
     };
     let lastFlushAt = 0;
+    let lastDeliveredText = "";
     let flushPromise = Promise.resolve();
     let flushTimer = null;
 
@@ -1718,14 +1718,16 @@ export function createRelayApp({
           progressState,
           updatedAt: now(),
         });
-        await telegram.replaceProgressMessage(
-          forumChat.id,
-          progressMessage,
-          text,
-          {
-            message_thread_id: messageThreadId,
-          },
-        );
+
+        if (text === lastDeliveredText) {
+          lastFlushAt = clock();
+          return;
+        }
+
+        await telegram.sendLongMessage(forumChat.id, text, {
+          message_thread_id: messageThreadId,
+        });
+        lastDeliveredText = text;
         lastFlushAt = clock();
       } catch (error) {
         logger.error(error);
@@ -1758,6 +1760,7 @@ export function createRelayApp({
         if (flushTimer) {
           clearTimeout(flushTimer);
           flushTimer = null;
+          flushPromise = flushPromise.then(flush);
         }
 
         await flushPromise;
@@ -1941,30 +1944,6 @@ export function createRelayApp({
     await syncTopicName(session.id);
 
     if (!job.chatId || isCancelled) {
-      return;
-    }
-
-    if (job.progressMessageId) {
-      if (isFailure) {
-        await telegram.replaceProgressMessage(
-          job.chatId,
-          { message_id: job.progressMessageId },
-          `${formatProviderName(session.provider || codexConfig.defaultProvider || "codex")} failed.\n\n${payload.error}`,
-          {
-            message_thread_id: job.messageThreadId,
-          },
-        );
-        return;
-      }
-
-      await telegram.replaceProgressMessageWithMarkdown(
-        job.chatId,
-        { message_id: job.progressMessageId },
-        payload.message,
-        {
-          message_thread_id: job.messageThreadId,
-        },
-      );
       return;
     }
 

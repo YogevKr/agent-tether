@@ -1083,7 +1083,7 @@ test("When a topic message continues a bound session, then relay sends only the 
   assert.ok(telegram.calls.sendChatAction.length >= 1);
 });
 
-test("When intermediate steps are enabled for a topic session, then relay replaces a live progress message before the final reply", async () => {
+test("When intermediate steps are enabled for a topic session, then relay sends step updates and the final reply as separate messages", async () => {
   const store = await createTempStore();
   const telegram = createFakeTelegram();
   let tick = 0;
@@ -1135,8 +1135,8 @@ test("When intermediate steps are enabled for a topic session, then relay replac
 
   const session = await store.getSession("session-steps-2");
   const pendingMessage = telegram.calls.sendMessage.at(-1);
-  const progressUpdate = telegram.calls.replaceProgressMessage.at(-1);
-  const finalMessage = telegram.calls.replaceProgressMessageWithMarkdown.at(-1);
+  const progressUpdate = telegram.calls.sendLongMessage.at(-1);
+  const finalMessage = telegram.calls.sendMarkdownMessage.at(-1);
 
   assert.equal(session?.threadId, "thread-steps-2");
   assert.equal(session?.latestAssistantMessage, "Final reply");
@@ -1145,7 +1145,8 @@ test("When intermediate steps are enabled for a topic session, then relay replac
   assert.match(progressUpdate.text, /command: npm test/);
   assert.match(progressUpdate.text, /draft reply:/);
   assert.equal(finalMessage.text, "Final reply");
-  assert.equal(telegram.calls.sendMarkdownMessage.length, 0);
+  assert.equal(telegram.calls.replaceProgressMessage.length, 0);
+  assert.equal(telegram.calls.replaceProgressMessageWithMarkdown.length, 0);
 });
 
 test("When a second topic prompt arrives while Codex is still running, then replies are sent in order without progress messages", async () => {
