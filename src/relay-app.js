@@ -36,7 +36,7 @@ const MAX_REASONING_CHARS = 700;
 const MAX_COMMAND_OUTPUT_CHARS = 1000;
 const MAX_DRAFT_REPLY_CHARS = 2200;
 const RETENTION_SWEEP_INTERVAL_MS = 60_000;
-const RUNNING_TOPIC_PREFIX = "⏳ ";
+const SESSION_CALLBACK_REF_LENGTH = 12;
 const execFileAsync = promisify(execFile);
 
 export function createRelayApp({
@@ -85,7 +85,7 @@ export function createRelayApp({
       errorMessage: "Interrupted by relay restart.",
     });
 
-    await syncAllTopicRunningIndicators();
+    await syncAllTopicNames();
 
     await maybeApplySessionRetention(true);
 
@@ -751,41 +751,96 @@ export function createRelayApp({
       return;
     }
 
-    if (query.data.startsWith("session:details:")) {
-      const sessionId = query.data.slice("session:details:".length);
-      await renderSessionDetails(chatId, messageId, sessionId);
-      await telegram.answerCallbackQuery(query.id, {
-        text: "Session details loaded.",
+    const sessionAction = parseSessionActionData(query.data);
+
+    if (sessionAction) {
+      const session = await resolveSessionActionSession(sessionAction.sessionRef, {
+        includeClosed: true,
       });
-      return;
-    }
 
-    if (query.data.startsWith("session:latest:")) {
-      const sessionId = query.data.slice("session:latest:".length);
-      const session = await store.getSession(sessionId);
-
-      if (!session || session.status === "closed") {
+      if (!session) {
         await telegram.answerCallbackQuery(query.id, {
-          text: "Session not found.",
+          text: "Session not found. Refresh Sessions.",
           show_alert: true,
         });
         return;
       }
 
-      await sendLatestReply(chatId, session);
-      await telegram.answerCallbackQuery(query.id, {
-        text: "Latest reply sent.",
-      });
-      return;
-    }
+      if (sessionAction.action === "details") {
+        await renderSessionDetails(chatId, messageId, session.id, {
+          mode: sessionAction.mode,
+          page: sessionAction.page,
+        });
+        await telegram.answerCallbackQuery(query.id, {
+          text: "Session details loaded.",
+        });
+        return;
+      }
 
-    if (query.data.startsWith("session:create:")) {
-      const sessionId = query.data.slice("session:create:".length);
-      await createTopicForSession(sessionId, {
-        controlChatId: chatId,
-        panelMessageId: messageId,
-        callbackQueryId: query.id,
-      });
+      if (sessionAction.action === "latest") {
+        if (session.status === "closed") {
+          await telegram.answerCallbackQuery(query.id, {
+            text: "Session not found.",
+            show_alert: true,
+          });
+          return;
+        }
+
+        await sendLatestReply(chatId, session);
+        await telegram.answerCallbackQuery(query.id, {
+          text: "Latest reply sent.",
+        });
+        return;
+      }
+
+      if (sessionAction.action === "create") {
+        await createTopicForSession(session.id, {
+          controlChatId: chatId,
+          panelMessageId: messageId,
+          callbackQueryId: query.id,
+          mode: sessionAction.mode,
+          page: sessionAction.page,
+        });
+        return;
+      }
+
+      if (sessionAction.action === "archive") {
+        await archiveSession(session.id);
+        await renderSessionsPanel(chatId, messageId, sessionAction.page);
+        await telegram.answerCallbackQuery(query.id, {
+          text: "Session archived.",
+        });
+        return;
+      }
+
+      if (sessionAction.action === "restore") {
+        await restoreSession(session.id);
+        await renderSessionDetails(chatId, messageId, session.id, {
+          mode: sessionAction.mode,
+          page: sessionAction.page,
+        });
+        await telegram.answerCallbackQuery(query.id, {
+          text: "Session restored.",
+        });
+        return;
+      }
+
+      if (sessionAction.action === "steps") {
+        await store.updateSession(session.id, {
+          showIntermediateSteps: !session.showIntermediateSteps,
+          updatedAt: now(),
+        });
+        await renderSessionDetails(chatId, messageId, session.id, {
+          mode: sessionAction.mode,
+          page: sessionAction.page,
+        });
+        await telegram.answerCallbackQuery(query.id, {
+          text: session.showIntermediateSteps
+            ? "Intermediate steps hidden."
+            : "Intermediate steps enabled.",
+        });
+        return;
+      }
     }
   }
 
@@ -969,25 +1024,33 @@ export function createRelayApp({
       }
     }
 
-    if (query.data.startsWith("topic:status:")) {
+    const topicAction = parseTopicActionData(query.data);
+
+    if (!topicAction) {
+      return;
+    }
+
+    const resolvedSession = session || await resolveTopicActionSession(topicId, topicAction.sessionRef);
+
+    if (topicAction.action === "status") {
       await telegram.sendMessage(
         forumChat.id,
-        session
-          ? await formatDetailedSessionStatus(session)
+        resolvedSession
+          ? await formatDetailedSessionStatus(resolvedSession)
           : unboundTopicText("bind"),
         {
           message_thread_id: topicId,
-          reply_markup: buildTopicKeyboard(session, topicKeyboardActions()),
+          reply_markup: buildTopicKeyboard(resolvedSession, topicKeyboardActions()),
         },
       );
       await telegram.answerCallbackQuery(query.id, {
-        text: session ? "Session status sent." : "No session bound.",
+        text: resolvedSession ? "Session status sent." : "No session bound.",
       });
       return;
     }
 
-    if (query.data.startsWith("topic:latest:")) {
-      if (!session) {
+    if (topicAction.action === "latest") {
+      if (!resolvedSession) {
         await telegram.answerCallbackQuery(query.id, {
           text: "No session bound.",
           show_alert: true,
@@ -995,9 +1058,9 @@ export function createRelayApp({
         return;
       }
 
-      await sendLatestReply(forumChat.id, session, {
+      await sendLatestReply(forumChat.id, resolvedSession, {
         message_thread_id: topicId,
-        reply_markup: buildTopicKeyboard(session, topicKeyboardActions()),
+        reply_markup: buildTopicKeyboard(resolvedSession, topicKeyboardActions()),
       });
       await telegram.answerCallbackQuery(query.id, {
         text: "Latest reply sent.",
@@ -1005,25 +1068,25 @@ export function createRelayApp({
       return;
     }
 
-    if (query.data.startsWith("topic:queue:")) {
+    if (topicAction.action === "queue") {
       await telegram.sendMessage(
         forumChat.id,
-        session
-          ? await formatSessionQueuePanel(session)
+        resolvedSession
+          ? await formatSessionQueuePanel(resolvedSession)
           : unboundTopicText("bind"),
         {
           message_thread_id: topicId,
-          reply_markup: buildTopicKeyboard(session, topicKeyboardActions()),
+          reply_markup: buildTopicKeyboard(resolvedSession, topicKeyboardActions()),
         },
       );
       await telegram.answerCallbackQuery(query.id, {
-        text: session ? "Queue status sent." : "No session bound.",
+        text: resolvedSession ? "Queue status sent." : "No session bound.",
       });
       return;
     }
 
-    if (query.data.startsWith("topic:stop:")) {
-      if (!session) {
+    if (topicAction.action === "stop") {
+      if (!resolvedSession) {
         await telegram.answerCallbackQuery(query.id, {
           text: "No session bound.",
           show_alert: true,
@@ -1033,10 +1096,10 @@ export function createRelayApp({
 
       await telegram.sendMessage(
         forumChat.id,
-        await stopSessionRuns(session),
+        await stopSessionRuns(resolvedSession),
         {
           message_thread_id: topicId,
-          reply_markup: buildTopicKeyboard(session, topicKeyboardActions()),
+          reply_markup: buildTopicKeyboard(resolvedSession, topicKeyboardActions()),
         },
       );
       await telegram.answerCallbackQuery(query.id, {
@@ -1045,8 +1108,8 @@ export function createRelayApp({
       return;
     }
 
-    if (query.data.startsWith("topic:reset:")) {
-      if (!session) {
+    if (topicAction.action === "steps") {
+      if (!resolvedSession) {
         await telegram.answerCallbackQuery(query.id, {
           text: "No session bound.",
           show_alert: true,
@@ -1054,8 +1117,38 @@ export function createRelayApp({
         return;
       }
 
-      await requestSessionStop(session);
-      await store.detachSession(session.id);
+      const updatedSession = await store.updateSession(resolvedSession.id, {
+        showIntermediateSteps: !resolvedSession.showIntermediateSteps,
+        updatedAt: now(),
+      });
+
+      if (updatedSession && query.message?.message_id) {
+        await telegram.editMessageReplyMarkup(
+          forumChat.id,
+          query.message.message_id,
+          buildTopicKeyboard(updatedSession, topicKeyboardActions()),
+        );
+      }
+
+      await telegram.answerCallbackQuery(query.id, {
+        text: resolvedSession.showIntermediateSteps
+          ? "Intermediate steps hidden."
+          : "Intermediate steps enabled.",
+      });
+      return;
+    }
+
+    if (topicAction.action === "reset") {
+      if (!resolvedSession) {
+        await telegram.answerCallbackQuery(query.id, {
+          text: "No session bound.",
+          show_alert: true,
+        });
+        return;
+      }
+
+      await requestSessionStop(resolvedSession);
+      await store.detachSession(resolvedSession.id);
       await telegram.sendMessage(
         forumChat.id,
         "Session detached from this topic. It is headless again and can be rebound from Sessions in General or DM.",
@@ -1067,10 +1160,11 @@ export function createRelayApp({
       await telegram.answerCallbackQuery(query.id, {
         text: "Session detached.",
       });
+      return;
     }
 
-    if (query.data.startsWith("topic:archive:")) {
-      if (!session) {
+    if (topicAction.action === "archive") {
+      if (!resolvedSession) {
         await telegram.answerCallbackQuery(query.id, {
           text: "No session bound.",
           show_alert: true,
@@ -1078,11 +1172,12 @@ export function createRelayApp({
         return;
       }
 
-      await requestSessionStop(session);
-      await archiveSession(session.id);
+      await requestSessionStop(resolvedSession);
+      await archiveSession(resolvedSession.id);
       await telegram.answerCallbackQuery(query.id, {
         text: "Session archived.",
       });
+      return;
     }
   }
 
@@ -1751,7 +1846,7 @@ export function createRelayApp({
       return;
     }
 
-    await syncTopicRunningIndicator(session.id);
+    await syncTopicName(session.id);
     stopTypingHeartbeat = startTypingHeartbeat({
       chatId: forumChat.id,
       messageThreadId,
@@ -1843,7 +1938,7 @@ export function createRelayApp({
       activeRunSource: "",
       updatedAt: finishedAt,
     });
-    await syncTopicRunningIndicator(session.id);
+    await syncTopicName(session.id);
 
     if (!job.chatId || isCancelled) {
       return;
@@ -1924,28 +2019,22 @@ export function createRelayApp({
       active.controller.abort();
     }
 
-    await syncTopicRunningIndicator(session.id);
+    await syncTopicName(session.id);
 
     return outcome;
   }
 
-  async function syncTopicRunningIndicator(sessionId) {
+  async function syncTopicName(sessionId) {
     const session = await store.getSession(sessionId);
 
     if (!session?.forumChatId || !session.topicId) {
       return;
     }
 
-    const jobs = await store.listJobsForSession(sessionId, {
-      statuses: ["queued", "running"],
-    });
-    const isRunning = jobs.some((job) => job.kind === "run-turn");
     const baseName = String(session.topicName || session.label || "Agent session")
       .replace(/^⏳\s*/, "")
       .trim() || "Agent session";
-    const targetName = isRunning
-      ? formatRunningTopicName(baseName)
-      : baseName.slice(0, 128);
+    const targetName = baseName.slice(0, 128);
 
     try {
       await telegram.editForumTopic(session.forumChatId, session.topicId, {
@@ -1958,7 +2047,7 @@ export function createRelayApp({
     }
   }
 
-  async function syncAllTopicRunningIndicators() {
+  async function syncAllTopicNames() {
     const sessions = await store.listSessions();
 
     for (const session of sessions) {
@@ -1966,7 +2055,7 @@ export function createRelayApp({
         continue;
       }
 
-      await syncTopicRunningIndicator(session.id);
+      await syncTopicName(session.id);
     }
   }
 
@@ -2078,6 +2167,125 @@ export function createRelayApp({
     return token;
   }
 
+  function buildSessionCallbackRef(sessionId) {
+    return String(sessionId || "").slice(0, SESSION_CALLBACK_REF_LENGTH);
+  }
+
+  async function resolveSessionActionSession(sessionRef, { includeClosed = false } = {}) {
+    const ref = String(sessionRef || "").trim();
+
+    if (!ref) {
+      return null;
+    }
+
+    const exact = await store.getSession(ref);
+
+    if (exact) {
+      return includeClosed || exact.status !== "closed" ? exact : null;
+    }
+
+    const sessions = await store.listSessions({ includeClosed });
+    const matches = sessions.filter((session) => session.id.startsWith(ref));
+
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  function normalizePanelMode(mode) {
+    return mode === "archived" ? "archived" : "open";
+  }
+
+  function buildSessionActionData(action, session, { mode = "open", page = 0 } = {}) {
+    return [
+      "session",
+      action,
+      buildSessionCallbackRef(session.id),
+      normalizePanelMode(mode),
+      String(page),
+    ].join(":");
+  }
+
+  function buildTopicActionData(action, session) {
+    return [
+      "topic",
+      action,
+      buildSessionCallbackRef(session.id),
+    ].join(":");
+  }
+
+  function parseSessionActionData(data) {
+    const parts = String(data || "").split(":");
+
+    if (parts.length < 3 || parts[0] !== "session") {
+      return null;
+    }
+
+    const [, action, sessionRef, mode = "open", rawPage = "0"] = parts;
+
+    if (!["details", "latest", "create", "archive", "restore", "steps"].includes(action)) {
+      return null;
+    }
+
+    const page = Number.parseInt(rawPage, 10);
+
+    return {
+      action,
+      sessionRef,
+      mode: normalizePanelMode(mode),
+      page: Number.isNaN(page) ? 0 : page,
+    };
+  }
+
+  function parseTopicActionData(data) {
+    const parts = String(data || "").split(":");
+
+    if (parts.length < 3 || parts[0] !== "topic") {
+      return null;
+    }
+
+    const [, action, sessionRef] = parts;
+
+    if (!["status", "queue", "stop", "latest", "steps", "reset", "archive"].includes(action)) {
+      return null;
+    }
+
+    return {
+      action,
+      sessionRef,
+    };
+  }
+
+  async function resolveTopicActionSession(topicId, sessionRef) {
+    const session = await resolveSessionActionSession(sessionRef, {
+      includeClosed: true,
+    });
+
+    if (
+      !session ||
+      session.status === "closed" ||
+      !session.forumChatId ||
+      session.topicId === null ||
+      session.topicId === undefined
+    ) {
+      return null;
+    }
+
+    if (
+      String(session.forumChatId) !== String(forumChat.id) ||
+      Number(session.topicId) !== Number(topicId)
+    ) {
+      return null;
+    }
+
+    return store.bindSession(session.id, {
+      forumChatId: session.forumChatId,
+      topicId: session.topicId,
+      topicName: session.topicName,
+      topicLink: session.topicLink,
+      bootstrapMessageId: session.bootstrapMessageId,
+      updatedAt: session.updatedAt,
+    });
+  }
+
   async function formatDetailedSessionStatus(session) {
     const gitBranch = await getGitBranch(session.cwd);
 
@@ -2091,32 +2299,15 @@ export function createRelayApp({
     });
   }
 
-  function issueSessionActionToken(action, sessionId, extra = {}) {
-    return `session:ui:${issueUiToken({
-      kind: "session-action",
-      action,
-      sessionId,
-      ...extra,
-    })}`;
-  }
-
-  function issueTopicActionToken(action, sessionId) {
-    return `topic:ui:${issueUiToken({
-      kind: "topic-action",
-      action,
-      sessionId,
-    })}`;
-  }
-
   function sessionKeyboardActions({ mode = "open", page = 0 } = {}) {
     return {
-      bindSession: (session) => issueSessionActionToken("create", session.id, { mode, page }),
-      showSessionDetails: (session) => issueSessionActionToken("details", session.id, { mode, page }),
-      showLatestSessionReply: (session) => issueSessionActionToken("latest", session.id, { mode, page }),
+      bindSession: (session) => buildSessionActionData("create", session, { mode, page }),
+      showSessionDetails: (session) => buildSessionActionData("details", session, { mode, page }),
+      showLatestSessionReply: (session) => buildSessionActionData("latest", session, { mode, page }),
       toggleIntermediateSteps: (session) =>
-        issueSessionActionToken("toggle-steps", session.id, { mode, page }),
-      archiveSession: (session) => issueSessionActionToken("archive", session.id, { mode, page }),
-      restoreSession: (session) => issueSessionActionToken("restore", session.id, { mode, page }),
+        buildSessionActionData("steps", session, { mode, page }),
+      archiveSession: (session) => buildSessionActionData("archive", session, { mode, page }),
+      restoreSession: (session) => buildSessionActionData("restore", session, { mode, page }),
       backToSessions: () => `sessions:page:${mode}:${page}`,
       goToPage: (targetMode, targetPage) => `sessions:page:${targetMode}:${targetPage}`,
     };
@@ -2124,22 +2315,14 @@ export function createRelayApp({
 
   function topicKeyboardActions() {
     return {
-      showTopicStatus: (session) => issueTopicActionToken("status", session.id),
-      showTopicQueue: (session) => issueTopicActionToken("queue", session.id),
-      stopTopicSession: (session) => issueTopicActionToken("stop", session.id),
-      showLatestTopicReply: (session) => issueTopicActionToken("latest", session.id),
-      toggleTopicIntermediateSteps: (session) => issueTopicActionToken("toggle-steps", session.id),
-      detachTopicSession: (session) => issueTopicActionToken("reset", session.id),
-      archiveTopicSession: (session) => issueTopicActionToken("archive", session.id),
+      showTopicStatus: (session) => buildTopicActionData("status", session),
+      showTopicQueue: (session) => buildTopicActionData("queue", session),
+      stopTopicSession: (session) => buildTopicActionData("stop", session),
+      showLatestTopicReply: (session) => buildTopicActionData("latest", session),
+      toggleTopicIntermediateSteps: (session) => buildTopicActionData("steps", session),
+      detachTopicSession: (session) => buildTopicActionData("reset", session),
+      archiveTopicSession: (session) => buildTopicActionData("archive", session),
     };
-  }
-
-  function formatRunningTopicName(topicName) {
-    const baseName = String(topicName || "Agent session")
-      .replace(/^⏳\s*/, "")
-      .trim() || "Agent session";
-
-    return `${RUNNING_TOPIC_PREFIX}${baseName}`.slice(0, 128);
   }
 
   async function archiveSession(sessionId, { touchUpdatedAt = true } = {}) {

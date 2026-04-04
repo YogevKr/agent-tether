@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { loadEnvFiles } from "./env.js";
 
@@ -13,6 +14,7 @@ loadEnvFiles(PROJECT_ROOT);
 
 export function getBotConfig() {
   const stateStore = getStateStoreConfig();
+  const hostId = getHostIdConfig(stateStore);
 
   return {
     telegramToken: requireEnv("TELEGRAM_BOT_TOKEN"),
@@ -28,11 +30,17 @@ export function getBotConfig() {
       process.env.POLL_TIMEOUT_SECONDS,
       30,
     ),
-    hostId: process.env.RELAY_HOST_ID || os.hostname(),
+    hostId: hostId.value,
+    hostIdSource: hostId.source,
+    hostIdFile: hostId.filePath,
     startRoots: getStartRoots(),
     hubToken: process.env.RELAY_HUB_TOKEN || "",
     hubBindHost: process.env.RELAY_HUB_BIND_HOST || "127.0.0.1",
     hubPort: parsePositiveInt(process.env.RELAY_HUB_PORT, 8787),
+    startupWarnings: buildStartupWarnings({
+      stateStore,
+      hostId,
+    }),
     sessionRetention: {
       autoArchiveAfterMs:
         parseNonNegativeInt(process.env.RELAY_AUTO_ARCHIVE_AFTER_DAYS, 14) * 24 * 60 * 60 * 1000,
@@ -44,6 +52,8 @@ export function getBotConfig() {
 
 export function getRuntimeConfig() {
   const defaultProvider = normalizeAgentProvider(process.env.AGENT_PROVIDER || "codex");
+  const stateStore = getStateStoreConfig();
+  const hostId = getHostIdConfig(stateStore);
   const shared = {
     defaultProvider,
     defaultCwd: resolveExistingDir(
@@ -54,7 +64,15 @@ export function getRuntimeConfig() {
     telegramApiBaseUrl:
       process.env.TELEGRAM_API_BASE_URL || "https://api.telegram.org",
     whisperBin: process.env.WHISPER_BIN || "whisper",
-    hostId: process.env.RELAY_HOST_ID || os.hostname(),
+    hostId: hostId.value,
+    hostIdSource: hostId.source,
+    hostIdFile: hostId.filePath,
+    stateFile: stateStore.filePath,
+    stateFallbackReadPaths: stateStore.fallbackReadPaths,
+    startupWarnings: buildStartupWarnings({
+      stateStore,
+      hostId,
+    }),
     startRoots: getStartRoots(),
     workerConcurrency: parsePositiveInt(process.env.RELAY_WORKER_CONCURRENCY, 4),
     hubUrl: process.env.RELAY_HUB_URL || "",
@@ -118,6 +136,9 @@ export function normalizeAgentProvider(provider) {
 }
 
 export function getLegacyCodexConfig() {
+  const stateStore = getStateStoreConfig();
+  const hostId = getHostIdConfig(stateStore);
+
   return {
     bin: process.env.CODEX_BIN || "codex",
     defaultCwd: resolveExistingDir(
@@ -132,7 +153,15 @@ export function getLegacyCodexConfig() {
       process.env.CODEX_SKIP_GIT_REPO_CHECK,
       true,
     ),
-    hostId: process.env.RELAY_HOST_ID || os.hostname(),
+    hostId: hostId.value,
+    hostIdSource: hostId.source,
+    hostIdFile: hostId.filePath,
+    stateFile: stateStore.filePath,
+    stateFallbackReadPaths: stateStore.fallbackReadPaths,
+    startupWarnings: buildStartupWarnings({
+      stateStore,
+      hostId,
+    }),
     startRoots: getStartRoots(),
     hubUrl: process.env.RELAY_HUB_URL || "",
     hubToken: process.env.RELAY_HUB_TOKEN || "",
@@ -148,6 +177,8 @@ export function getStateStoreConfig() {
     return {
       filePath: resolveProjectPath(process.env.STATE_FILE),
       fallbackReadPaths: [],
+      source: "env",
+      isExplicit: true,
     };
   }
 
@@ -157,7 +188,63 @@ export function getStateStoreConfig() {
   return {
     filePath,
     fallbackReadPaths: filePath === legacyFilePath ? [] : [legacyFilePath],
+    source: "default",
+    isExplicit: false,
   };
+}
+
+export function getHostIdConfig(stateStoreConfig = getStateStoreConfig()) {
+  if (process.env.RELAY_HOST_ID) {
+    return {
+      value: process.env.RELAY_HOST_ID,
+      source: "env",
+      filePath: getDefaultHostIdFile(stateStoreConfig.filePath),
+    };
+  }
+
+  const filePath = getDefaultHostIdFile(stateStoreConfig.filePath);
+  const persisted = readPersistedHostId(filePath);
+
+  if (persisted) {
+    return {
+      value: persisted,
+      source: "state-file",
+      filePath,
+    };
+  }
+
+  const generated = buildGeneratedHostId();
+
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, `${generated}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+    });
+    return {
+      value: generated,
+      source: "generated",
+      filePath,
+    };
+  } catch (error) {
+    if (error.code === "EEXIST") {
+      const settled = readPersistedHostId(filePath);
+
+      if (settled) {
+        return {
+          value: settled,
+          source: "state-file",
+          filePath,
+        };
+      }
+    }
+
+    return {
+      value: os.hostname(),
+      source: "hostname",
+      filePath,
+    };
+  }
 }
 
 export function assertAuthorizedUser(userId, authorizedUserIds) {
@@ -213,6 +300,10 @@ function getDefaultStateFile() {
   return path.join(getDefaultStateDir(), "state.json");
 }
 
+function getDefaultHostIdFile(stateFilePath) {
+  return path.join(path.dirname(stateFilePath), "host-id");
+}
+
 function getLegacyStateFile() {
   return resolveProjectPath("./data/state.json");
 }
@@ -233,6 +324,55 @@ function getDefaultStateDir() {
     process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state"),
     "agent-tether",
   );
+}
+
+function readPersistedHostId(filePath) {
+  try {
+    const persisted = fs.readFileSync(filePath, "utf8").trim();
+    return persisted || "";
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return "";
+    }
+
+    throw error;
+  }
+}
+
+function buildGeneratedHostId() {
+  const hostnamePart = String(os.hostname() || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 24) || "host";
+
+  return `${hostnamePart}-${randomUUID().slice(0, 8)}`;
+}
+
+function buildStartupWarnings({ stateStore, hostId }) {
+  const warnings = [];
+
+  if (!stateStore.isExplicit) {
+    warnings.push(
+      `STATE_FILE is not set. Using ${stateStore.filePath}. In stateless deploys, mount this path or set STATE_FILE to persistent storage.`,
+    );
+  }
+
+  if (hostId.source === "generated") {
+    warnings.push(
+      `RELAY_HOST_ID is not set. Generated stable host id ${hostId.value} and persisted it to ${hostId.filePath}. Set RELAY_HOST_ID explicitly if you need a fixed cross-deploy node name.`,
+    );
+  } else if (hostId.source === "state-file") {
+    warnings.push(
+      `RELAY_HOST_ID is not set. Reusing persisted host id ${hostId.value} from ${hostId.filePath}. Set RELAY_HOST_ID explicitly if you need a fixed cross-deploy node name.`,
+    );
+  } else if (hostId.source === "hostname") {
+    warnings.push(
+      `RELAY_HOST_ID is not set and ${hostId.filePath} was not writable. Falling back to hostname ${hostId.value}; this can drift across deploys.`,
+    );
+  }
+
+  return warnings;
 }
 
 function resolveExistingDir(dirPath, envName) {

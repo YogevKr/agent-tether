@@ -4,8 +4,6 @@ import { applyHookEvent } from "./hook-index.js";
 import { createProgressState, formatProgressMessage } from "./relay-app.js";
 import { formatProviderName } from "./session-view.js";
 
-const RUNNING_TOPIC_PREFIX = "⏳ ";
-
 export function createHubServer({
   botConfig,
   codexConfig = null,
@@ -77,7 +75,7 @@ export function createHubServer({
       activeRunSource: "",
       updatedAt: finishedAt,
     });
-    await syncTopicRunningIndicator(session.id);
+    await syncTopicName(session.id);
 
     if (job.chatId && !isCancelled) {
       try {
@@ -124,23 +122,17 @@ export function createHubServer({
     return { ok: true, sessionId: session.id };
   }
 
-  async function syncTopicRunningIndicator(sessionId) {
+  async function syncTopicName(sessionId) {
     const session = await store.getSession(sessionId);
 
     if (!session?.forumChatId || !session.topicId) {
       return;
     }
 
-    const jobs = await store.listJobsForSession(sessionId, {
-      statuses: ["queued", "running"],
-    });
-    const isRunning = jobs.some((job) => job.kind === "run-turn");
     const baseName = String(session.topicName || session.label || "Agent session")
       .replace(/^⏳\s*/, "")
       .trim() || "Agent session";
-    const targetName = isRunning
-      ? `${RUNNING_TOPIC_PREFIX}${baseName}`.slice(0, 128)
-      : baseName.slice(0, 128);
+    const targetName = baseName.slice(0, 128);
 
     try {
       await telegram.editForumTopic(session.forumChatId, session.topicId, {
@@ -153,7 +145,7 @@ export function createHubServer({
     }
   }
 
-  async function syncAllTopicRunningIndicators() {
+  async function syncAllTopicNames() {
     const sessions = await store.listSessions();
 
     for (const session of sessions) {
@@ -161,7 +153,7 @@ export function createHubServer({
         continue;
       }
 
-      await syncTopicRunningIndicator(session.id);
+      await syncTopicName(session.id);
     }
   }
 
@@ -214,7 +206,7 @@ export function createHubServer({
         }
 
         if (job.kind === "run-turn") {
-          await syncTopicRunningIndicator(job.sessionId);
+          await syncTopicName(job.sessionId);
         }
 
         const session = await store.getSession(job.sessionId);
@@ -231,7 +223,7 @@ export function createHubServer({
         });
 
         for (const sessionId of recovery.recoveredSessionIds) {
-          await syncTopicRunningIndicator(sessionId);
+          await syncTopicName(sessionId);
         }
 
         return sendJson(response, 200, {
@@ -304,7 +296,7 @@ export function createHubServer({
         const outcome = await store.requestStopForSession(sessionId, {
           now: now(),
         });
-        await syncTopicRunningIndicator(sessionId);
+        await syncTopicName(sessionId);
 
         return sendJson(response, 200, {
           ok: true,
@@ -332,7 +324,7 @@ export function createHubServer({
         });
       }
 
-      await syncAllTopicRunningIndicators();
+      await syncAllTopicNames();
 
       await new Promise((resolve) => {
         server.listen(botConfig.hubPort, botConfig.hubBindHost, resolve);
@@ -375,7 +367,7 @@ export function createHubServer({
         now: now(),
       });
 
-      await syncTopicRunningIndicator(sessionId);
+      await syncTopicName(sessionId);
       return outcome;
     },
     async recoverHostRuns(hostId, { errorMessage = "Interrupted before completion." } = {}) {
@@ -386,7 +378,7 @@ export function createHubServer({
       });
 
       for (const sessionId of recovery.recoveredSessionIds) {
-        await syncTopicRunningIndicator(sessionId);
+        await syncTopicName(sessionId);
       }
 
       return recovery;

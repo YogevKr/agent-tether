@@ -37,8 +37,10 @@ Run coding agents on your machine as usual. Global Codex and Claude Code hooks i
    - `TELEGRAM_FORUM_CHAT_ID`
    - `CODEX_DEFAULT_CWD`
    - `RELAY_START_ROOTS`
-   - `RELAY_HOST_ID`
+   - optional but recommended: `RELAY_HOST_ID`
    - optional: `STATE_FILE` if you want a custom persistence path; default uses an OS app-data location instead of the repo checkout
+     - for deployed/stateless environments, point this at a mounted persistent path
+     - if `RELAY_HOST_ID` is unset, Agent Tether persists a generated host id next to `STATE_FILE`
 
 3. For multi-host mode:
 
@@ -287,6 +289,7 @@ MIT
 ## State model
 
 - sessions are persisted in `STATE_FILE` (default: OS app-data dir; older `./data/state.json` installs are still read as a fallback and migrate on next write)
+- when `RELAY_HOST_ID` is unset, Agent Tether persists a generated host id next to `STATE_FILE` and reuses it on restart
 - each session stores:
   - label
   - cwd

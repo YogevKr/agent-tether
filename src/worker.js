@@ -23,8 +23,12 @@ async function main() {
     throw new Error("RELAY_HUB_URL is required for worker mode.");
   }
 
+  for (const warning of codexConfig.startupWarnings || []) {
+    console.warn(`warning: ${warning}`);
+  }
+
   console.log(
-    `worker up host=${codexConfig.hostId} hub=${codexConfig.hubUrl} concurrency=${codexConfig.workerConcurrency}`,
+    `worker up host=${codexConfig.hostId} source=${codexConfig.hostIdSource} state=${codexConfig.stateFile} hub=${codexConfig.hubUrl} concurrency=${codexConfig.workerConcurrency}`,
   );
 
   await recoverInterruptedJobsOnHub().catch((error) => {

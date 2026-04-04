@@ -1,7 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { PROJECT_ROOT, getStateFile, getStateStoreConfig } from "../src/config.js";
+import {
+  PROJECT_ROOT,
+  getHostIdConfig,
+  getStateFile,
+  getStateStoreConfig,
+} from "../src/config.js";
 
 test("When STATE_FILE is unset, then state defaults outside the repo and keeps the legacy repo path as a fallback", () => {
   const previousStateFile = process.env.STATE_FILE;
@@ -32,6 +39,49 @@ test("When STATE_FILE is set, then the configured path is used without legacy fa
     assert.deepEqual(config.fallbackReadPaths, []);
   } finally {
     restoreEnv("STATE_FILE", previousStateFile);
+  }
+});
+
+test("When RELAY_HOST_ID is unset, then a stable host id is persisted next to STATE_FILE", () => {
+  const previousStateFile = process.env.STATE_FILE;
+  const previousHostId = process.env.RELAY_HOST_ID;
+
+  try {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "relay-config-"));
+    process.env.STATE_FILE = path.join(tempDir, "state.json");
+    delete process.env.RELAY_HOST_ID;
+
+    const first = getHostIdConfig();
+    const second = getHostIdConfig();
+    const persisted = fs.readFileSync(first.filePath, "utf8").trim();
+
+    assert.equal(first.source, "generated");
+    assert.equal(second.source, "state-file");
+    assert.equal(second.value, first.value);
+    assert.equal(persisted, first.value);
+  } finally {
+    restoreEnv("STATE_FILE", previousStateFile);
+    restoreEnv("RELAY_HOST_ID", previousHostId);
+  }
+});
+
+test("When RELAY_HOST_ID is set, then the explicit value wins without creating a host-id file", () => {
+  const previousStateFile = process.env.STATE_FILE;
+  const previousHostId = process.env.RELAY_HOST_ID;
+
+  try {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "relay-config-"));
+    process.env.STATE_FILE = path.join(tempDir, "state.json");
+    process.env.RELAY_HOST_ID = "mini-explicit";
+
+    const config = getHostIdConfig();
+
+    assert.equal(config.value, "mini-explicit");
+    assert.equal(config.source, "env");
+    assert.equal(fs.existsSync(config.filePath), false);
+  } finally {
+    restoreEnv("STATE_FILE", previousStateFile);
+    restoreEnv("RELAY_HOST_ID", previousHostId);
   }
 });
 

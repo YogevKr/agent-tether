@@ -53,7 +53,7 @@ test("When /sessions is requested in DM, then relay shows create and open action
 
   assert.match(sent.text, /Agent sessions/);
   assert.match(sent.text, /Tap the row number to bind, open, or restore that session/);
-  assert.ok(buttons.some((button) => button.callback_data?.startsWith("session:ui:")));
+  assert.ok(buttons.some((button) => button.callback_data?.startsWith("session:")));
   assert.ok(buttons.some((button) => button.url === "https://t.me/c/1001/4"));
   assert.ok(buttons.some((button) => button.callback_data === "dm:new"));
   assert.deepEqual(primaryButtons.map((button) => button.text), ["1", "2"]);
@@ -89,6 +89,56 @@ test("When /sessions includes long session ids, then button payloads stay within
     .filter((button) => button.callback_data);
 
   assert.equal(callbackButtons.every((button) => button.callback_data.length <= 64), true);
+});
+
+test("When the relay restarts, then older session panel buttons still work", async () => {
+  const store = await createTempStore();
+  const firstTelegram = createFakeTelegram();
+  const firstApp = createTestApp({ store, telegram: firstTelegram });
+
+  await store.saveSession({
+    id: "deploy-session-2a92a111-31f8-4001-8715-4e9fa02ca830",
+    label: "Deploy Smoke",
+    threadId: "thread-1",
+    cwd: "/repo",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+    status: "headless",
+  });
+
+  await firstApp.initialize();
+  await firstApp.handleUpdate({
+    message: {
+      text: "/sessions",
+      chat: { id: TEST_USER_ID, type: "private" },
+      from: { id: TEST_USER_ID },
+    },
+  });
+
+  const detailsButton = firstTelegram.calls.sendMessage
+    .at(-1)
+    .options.reply_markup.inline_keyboard[0][1];
+  const secondTelegram = createFakeTelegram();
+  const secondApp = createTestApp({ store, telegram: secondTelegram });
+
+  await secondApp.initialize();
+  await secondApp.handleUpdate({
+    callback_query: {
+      id: "cb-session-restart",
+      data: detailsButton.callback_data,
+      from: { id: TEST_USER_ID },
+      message: {
+        message_id: 21,
+        chat: { id: TEST_USER_ID, type: "private" },
+      },
+    },
+  });
+
+  const edited = secondTelegram.calls.editMessage.at(-1);
+  const answer = secondTelegram.calls.answerCallbackQuery.at(-1);
+
+  assert.match(edited.text, /Session: Deploy Smoke/);
+  assert.equal(answer.options.text, "Session details loaded.");
 });
 
 test("When more than five sessions exist, then /sessions paginates with next and prev controls", async () => {
@@ -761,6 +811,66 @@ test("When the topic keyboard toggles intermediate steps, then the session is up
   assert.ok(hideButton?.callback_data);
 });
 
+test("When the relay restarts, then older topic buttons still work", async () => {
+  const store = await createTempStore();
+  const firstTelegram = createFakeTelegram();
+  const firstApp = createTestApp({ store, telegram: firstTelegram });
+
+  await store.saveSession({
+    id: "session-topic-steps-restart-abcdef123456",
+    label: "Topic steps restart",
+    threadId: "thread-topic-steps-restart-1",
+    cwd: "/repo",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+    status: "bound",
+    forumChatId: "-1001",
+    topicId: 16,
+    topicName: "Topic steps restart",
+    topicLink: "https://t.me/c/1001/16",
+  });
+
+  await firstApp.initialize();
+  await firstApp.handleUpdate({
+    message: {
+      text: "/status",
+      chat: { id: -1001, type: "supergroup" },
+      from: { id: TEST_USER_ID },
+      message_thread_id: 16,
+    },
+  });
+
+  const statusMessage = firstTelegram.calls.sendMessage.at(-1);
+  const toggleButton = statusMessage.options.reply_markup.inline_keyboard
+    .flat()
+    .find((button) => button.text === "Show Steps");
+  const secondTelegram = createFakeTelegram();
+  const secondApp = createTestApp({ store, telegram: secondTelegram });
+
+  await secondApp.initialize();
+  await secondApp.handleUpdate({
+    callback_query: {
+      id: "cb-topic-restart",
+      data: toggleButton.callback_data,
+      from: { id: TEST_USER_ID },
+      message: {
+        message_id: statusMessage.message.message_id,
+        message_thread_id: 16,
+        chat: { id: -1001, type: "supergroup" },
+      },
+    },
+  });
+
+  const updated = await store.getSession("session-topic-steps-restart-abcdef123456");
+  const answer = secondTelegram.calls.answerCallbackQuery.at(-1);
+  const replyMarkupEdit = secondTelegram.calls.editMessageReplyMarkup.at(-1);
+
+  assert.equal(updated?.showIntermediateSteps, true);
+  assert.equal(answer.options.text, "Intermediate steps enabled.");
+  assert.equal(replyMarkupEdit.chatId, -1001);
+  assert.equal(replyMarkupEdit.messageId, statusMessage.message.message_id);
+});
+
 test("When /status is requested in a bound topic, then the git branch is shown when it exists", async () => {
   const store = await createTempStore();
   const telegram = createFakeTelegram();
@@ -963,7 +1073,7 @@ test("When a topic message continues a bound session, then relay sends only the 
   assert.equal(session?.latestAssistantMessage, "Final reply");
   assert.equal(telegram.calls.replaceProgressMessage.length, 0);
   assert.equal(finalMessage.text, "Final reply");
-  assert.deepEqual(topicNames, ["Streaming", "⏳ Streaming", "Streaming"]);
+  assert.deepEqual(topicNames, ["Streaming", "Streaming", "Streaming"]);
   assert.deepEqual(telegram.calls.setMessageReaction.at(-1), {
     chatId: -1001,
     messageId: 1,

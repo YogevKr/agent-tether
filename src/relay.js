@@ -28,4 +28,15 @@ const app = createRelayApp({
   hubServer,
 });
 
+logStartup();
 await app.run();
+
+function logStartup() {
+  for (const warning of botConfig.startupWarnings || []) {
+    console.warn(`warning: ${warning}`);
+  }
+
+  console.log(
+    `relay up host=${botConfig.hostId} source=${botConfig.hostIdSource} state=${botConfig.stateFile}`,
+  );
+}
