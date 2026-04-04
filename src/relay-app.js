@@ -85,9 +85,7 @@ export function createRelayApp({
       errorMessage: "Interrupted by relay restart.",
     });
 
-    for (const sessionId of recovery.recoveredSessionIds) {
-      await syncTopicRunningIndicator(sessionId);
-    }
+    await syncAllTopicRunningIndicators();
 
     await maybeApplySessionRetention(true);
 
@@ -1957,6 +1955,18 @@ export function createRelayApp({
       if (!String(error.message || "").toLowerCase().includes("not modified")) {
         logger.error(error);
       }
+    }
+  }
+
+  async function syncAllTopicRunningIndicators() {
+    const sessions = await store.listSessions();
+
+    for (const session of sessions) {
+      if (!session.forumChatId || !session.topicId) {
+        continue;
+      }
+
+      await syncTopicRunningIndicator(session.id);
     }
   }
 

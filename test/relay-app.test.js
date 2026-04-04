@@ -963,7 +963,7 @@ test("When a topic message continues a bound session, then relay sends only the 
   assert.equal(session?.latestAssistantMessage, "Final reply");
   assert.equal(telegram.calls.replaceProgressMessage.length, 0);
   assert.equal(finalMessage.text, "Final reply");
-  assert.deepEqual(topicNames, ["⏳ Streaming", "Streaming"]);
+  assert.deepEqual(topicNames, ["Streaming", "⏳ Streaming", "Streaming"]);
   assert.deepEqual(telegram.calls.setMessageReaction.at(-1), {
     chatId: -1001,
     messageId: 1,
@@ -1164,7 +1164,8 @@ test("When a topic message targets a remote host session, then relay queues the 
   assert.equal(hubServer.calls[0].session.hostId, "desktop");
   assert.equal(hubServer.calls[0].payload.prompt, "continue remotely");
   assert.equal(hubServer.calls[0].payload.progressMessageId, undefined);
-  assert.equal(telegram.calls.editForumTopic.length, 0);
+  assert.equal(telegram.calls.editForumTopic.length, 1);
+  assert.equal(telegram.calls.editForumTopic[0]?.options.name, "Remote host");
   assert.deepEqual(telegram.calls.setMessageReaction.at(-1), {
     chatId: -1001,
     messageId: 1,
@@ -1449,6 +1450,32 @@ test("When the relay starts after a local turn was interrupted, then the session
   assert.equal(job?.status, "failed");
   assert.equal(job?.error, "Interrupted by relay restart.");
   assert.equal(telegram.calls.editForumTopic.at(-1)?.options.name, "Recover topic");
+});
+
+test("When the relay starts with an idle bound topic, then stale running indicators are cleared", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const app = createTestApp({ store, telegram });
+
+  await store.saveSession({
+    id: "idle-topic-1",
+    label: "Idle topic",
+    threadId: "thread-idle-topic-1",
+    cwd: "/repo",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+    status: "bound",
+    forumChatId: "-1001",
+    topicId: 25,
+    topicName: "Idle topic",
+    topicLink: "https://t.me/c/1001/25",
+    isBusy: false,
+    activeRunSource: "",
+  });
+
+  await app.initialize();
+
+  assert.equal(telegram.calls.editForumTopic.at(-1)?.options.name, "Idle topic");
 });
 
 test("When a topic message includes Telegram attachments, then relay downloads them and passes attachment context into the turn", async () => {

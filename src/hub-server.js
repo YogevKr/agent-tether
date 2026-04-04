@@ -153,6 +153,18 @@ export function createHubServer({
     }
   }
 
+  async function syncAllTopicRunningIndicators() {
+    const sessions = await store.listSessions();
+
+    for (const session of sessions) {
+      if (!session.forumChatId || !session.topicId) {
+        continue;
+      }
+
+      await syncTopicRunningIndicator(session.id);
+    }
+  }
+
   const server = http.createServer(async (request, response) => {
     try {
       if (request.method === "GET" && request.url === "/api/health") {
@@ -319,6 +331,8 @@ export function createHubServer({
           lastSeenAt: now(),
         });
       }
+
+      await syncAllTopicRunningIndicators();
 
       await new Promise((resolve) => {
         server.listen(botConfig.hubPort, botConfig.hubBindHost, resolve);
