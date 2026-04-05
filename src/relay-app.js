@@ -2411,7 +2411,14 @@ export function createRelayApp({
 
     lastRetentionSweepAt = clock();
 
-    const sessions = await store.listSessions({ includeClosed: true });
+    const state = await store.read();
+    const sessions = Object.values(state.sessions || {});
+    const pendingSessionIds = new Set(
+      Object.values(state.jobs || {})
+        .filter((job) => job.status === "queued" || job.status === "running")
+        .map((job) => job.sessionId)
+        .filter(Boolean),
+    );
     let archivedCount = 0;
     let prunedCount = 0;
 
@@ -2427,11 +2434,8 @@ export function createRelayApp({
       }
 
       const ageMs = clock() - updatedAtMs;
-      const pendingJobs = await store.listJobsForSession(session.id, {
-        statuses: ["queued", "running"],
-      });
 
-      if (pendingJobs.length > 0) {
+      if (pendingSessionIds.has(session.id)) {
         continue;
       }
 

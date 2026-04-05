@@ -232,6 +232,98 @@ test("When an old hook-created duplicate already exists, then the next hook even
   assert.equal(duplicate, null);
 });
 
+test("When a Claude Telegram-run turn emits a new hook session id, then the active Telegram session is reused", async () => {
+  const store = await createTempStore();
+
+  await store.saveSession({
+    id: "telegram-session-3",
+    label: "repos",
+    threadId: "claude-old-3",
+    provider: "claude",
+    cwd: "/Users/yogev/repos",
+    hostId: "mini",
+    createdVia: "claude-telegram-ui",
+    createdAt: "2026-04-02T18:34:55.000Z",
+    updatedAt: "2026-04-02T18:34:55.000Z",
+    status: "bound",
+    forumChatId: "-1001",
+    topicId: 56,
+    topicName: "repos",
+    topicLink: "https://t.me/c/1001/56",
+    isBusy: true,
+    activeRunSource: "telegram",
+  });
+
+  await applyHookEvent(
+    store,
+    {
+      hook_event_name: "SessionStart",
+      session_id: "claude-new-3",
+      provider: "claude",
+      cwd: "/Users/yogev/repos",
+      host_id: "mini",
+      model: "claude-sonnet-4-5",
+      source: "resume",
+    },
+    {
+      now: () => "2026-04-02T18:34:56.000Z",
+    },
+  );
+
+  const reused = await store.getSession("telegram-session-3");
+  const duplicate = await store.getSession("claude-new-3");
+
+  assert.equal(reused?.threadId, "claude-new-3");
+  assert.equal(reused?.createdVia, "claude-telegram-ui");
+  assert.equal(duplicate, null);
+});
+
+test("When a Claude hook event arrives with a new session id for an idle Telegram session, then a new hook session is kept separate", async () => {
+  const store = await createTempStore();
+
+  await store.saveSession({
+    id: "telegram-session-4",
+    label: "repos",
+    threadId: "claude-old-4",
+    provider: "claude",
+    cwd: "/Users/yogev/repos",
+    hostId: "mini",
+    createdVia: "claude-telegram-ui",
+    createdAt: "2026-04-02T18:34:55.000Z",
+    updatedAt: "2026-04-02T18:34:55.000Z",
+    status: "bound",
+    forumChatId: "-1001",
+    topicId: 57,
+    topicName: "repos",
+    topicLink: "https://t.me/c/1001/57",
+    isBusy: false,
+    activeRunSource: "",
+  });
+
+  await applyHookEvent(
+    store,
+    {
+      hook_event_name: "SessionStart",
+      session_id: "claude-new-4",
+      provider: "claude",
+      cwd: "/Users/yogev/repos",
+      host_id: "mini",
+      model: "claude-sonnet-4-5",
+      source: "resume",
+    },
+    {
+      now: () => "2026-04-02T18:34:56.000Z",
+    },
+  );
+
+  const existing = await store.getSession("telegram-session-4");
+  const duplicate = await store.getSession("claude-new-4");
+
+  assert.equal(existing?.threadId, "claude-old-4");
+  assert.equal(duplicate?.threadId, "claude-new-4");
+  assert.equal(duplicate?.createdVia, "claude-hook");
+});
+
 async function createTempStore() {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-hook-"));
   return new StateStore(path.join(tempDir, "state.json"));

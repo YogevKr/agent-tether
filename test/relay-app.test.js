@@ -1082,6 +1082,61 @@ test("When sessions are stale, then viewing sessions auto-archives open ones and
   assert.equal(telegram.calls.deleteForumTopic.length, 1);
 });
 
+test("When a stale session still has queued work, then viewing sessions does not archive it", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const app = createTestApp({
+    store,
+    telegram,
+    now: () => "2026-04-20T12:00:00.000Z",
+    clock: () => Date.parse("2026-04-20T12:00:00.000Z"),
+    botConfigOverrides: {
+      sessionRetention: {
+        autoArchiveAfterMs: 7 * 24 * 60 * 60 * 1000,
+        autoPruneAfterMs: 30 * 24 * 60 * 60 * 1000,
+      },
+    },
+  });
+
+  await store.saveSession({
+    id: "session-stale-queued",
+    label: "Stale queued",
+    threadId: "thread-stale-queued",
+    cwd: "/repo",
+    createdAt: "2026-04-01T10:00:00.000Z",
+    updatedAt: "2026-04-01T10:00:00.000Z",
+    status: "bound",
+    forumChatId: "-1001",
+    topicId: 33,
+    topicName: "Stale queued",
+    topicLink: "https://t.me/c/1001/33",
+  });
+  await store.createJob({
+    id: "retention-queue-job-1",
+    sessionId: "session-stale-queued",
+    hostId: "mbp",
+    prompt: "queued work",
+    status: "queued",
+    createdAt: "2026-04-20T11:59:00.000Z",
+    updatedAt: "2026-04-20T11:59:00.000Z",
+  });
+
+  await app.initialize();
+  await app.handleUpdate({
+    message: {
+      text: "/sessions",
+      chat: { id: TEST_USER_ID, type: "private" },
+      from: { id: TEST_USER_ID },
+    },
+  });
+
+  const session = await store.getSession("session-stale-queued");
+
+  assert.equal(session?.status, "bound");
+  assert.equal(telegram.calls.closeForumTopic.length, 0);
+  assert.equal(telegram.calls.deleteForumTopic.length, 0);
+});
+
 test("When a topic message continues a bound session, then relay sends only the final reply and stores it", async () => {
   const store = await createTempStore();
   const telegram = createFakeTelegram();
