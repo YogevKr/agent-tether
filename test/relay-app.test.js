@@ -1503,6 +1503,111 @@ test("When a Claude topic turn runs without a saved model, then the Claude provi
   assert.equal(telegram.calls.sendMarkdownMessage.at(-1).text, "Claude final reply");
 });
 
+test("When topic turns start for different bound sessions, then relay runs them in parallel", async () => {
+  const store = await createTempStore();
+  const telegram = createFakeTelegram();
+  const blockers = new Map([
+    ["parallel-topic-1", createDeferred()],
+    ["parallel-topic-2", createDeferred()],
+  ]);
+  const startedSessions = [];
+  let activeRuns = 0;
+  let maxActiveRuns = 0;
+  let markBothStarted = () => {};
+  const bothStarted = new Promise((resolve) => {
+    markBothStarted = resolve;
+  });
+  const app = createTestApp({
+    store,
+    telegram,
+    runTurn: async (input) => {
+      startedSessions.push(input.threadId);
+      activeRuns += 1;
+      maxActiveRuns = Math.max(maxActiveRuns, activeRuns);
+
+      if (startedSessions.length === 2) {
+        markBothStarted();
+      }
+
+      await blockers.get(input.threadId).promise;
+      activeRuns -= 1;
+
+      return {
+        threadId: input.threadId,
+        message: `reply ${input.threadId}`,
+      };
+    },
+  });
+
+  await store.saveSession({
+    id: "parallel-topic-1",
+    label: "Parallel topic 1",
+    threadId: "parallel-topic-1",
+    cwd: "/repo",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+    status: "bound",
+    forumChatId: "-1001",
+    topicId: 31,
+    topicName: "Parallel topic 1",
+    topicLink: "https://t.me/c/1001/31",
+  });
+  await store.saveSession({
+    id: "parallel-topic-2",
+    label: "Parallel topic 2",
+    threadId: "parallel-topic-2",
+    cwd: "/repo",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+    status: "bound",
+    forumChatId: "-1001",
+    topicId: 32,
+    topicName: "Parallel topic 2",
+    topicLink: "https://t.me/c/1001/32",
+  });
+
+  await app.initialize();
+  await Promise.all([
+    app.handleUpdate({
+      message: {
+        text: "run parallel one",
+        chat: { id: -1001, type: "supergroup" },
+        from: { id: TEST_USER_ID },
+        message_thread_id: 31,
+        message_id: 1,
+      },
+    }),
+    app.handleUpdate({
+      message: {
+        text: "run parallel two",
+        chat: { id: -1001, type: "supergroup" },
+        from: { id: TEST_USER_ID },
+        message_thread_id: 32,
+        message_id: 2,
+      },
+    }),
+  ]);
+
+  await bothStarted;
+  blockers.get("parallel-topic-1").resolve();
+  blockers.get("parallel-topic-2").resolve();
+  await app.waitForIdle();
+
+  const [sessionOne, sessionTwo] = await Promise.all([
+    store.getSession("parallel-topic-1"),
+    store.getSession("parallel-topic-2"),
+  ]);
+
+  assert.deepEqual(startedSessions.sort(), ["parallel-topic-1", "parallel-topic-2"]);
+  assert.equal(maxActiveRuns, 2);
+  assert.equal(sessionOne?.latestAssistantMessage, "reply parallel-topic-1");
+  assert.equal(sessionTwo?.latestAssistantMessage, "reply parallel-topic-2");
+  assert.deepEqual(
+    telegram.calls.sendMarkdownMessage.map((call) => call.text).sort(),
+    ["reply parallel-topic-1", "reply parallel-topic-2"],
+  );
+});
+
 test("When /queue is requested in a bound topic, then relay shows running and queued prompts", async () => {
   const store = await createTempStore();
   const telegram = createFakeTelegram();
@@ -1794,6 +1899,18 @@ test("When a topic message includes Telegram attachments, then relay downloads t
 async function createTempStore() {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-app-"));
   return new StateStore(path.join(tempDir, "state.json"));
+}
+
+function createDeferred() {
+  let resolve = () => {};
+  const promise = new Promise((nextResolve) => {
+    resolve = nextResolve;
+  });
+
+  return {
+    promise,
+    resolve,
+  };
 }
 
 function createTestApp({
