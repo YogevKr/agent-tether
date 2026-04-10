@@ -2400,8 +2400,10 @@ export function createRelayApp({
   async function maybeApplySessionRetention(force = false) {
     const autoArchiveAfterMs = botConfig.sessionRetention?.autoArchiveAfterMs || 0;
     const autoPruneAfterMs = botConfig.sessionRetention?.autoPruneAfterMs || 0;
+    const terminalJobRetentionMs = botConfig.stateCompaction?.terminalJobRetentionMs || 0;
+    const maxTerminalJobs = botConfig.stateCompaction?.maxTerminalJobs || 0;
 
-    if (!autoArchiveAfterMs && !autoPruneAfterMs) {
+    if (!autoArchiveAfterMs && !autoPruneAfterMs && !terminalJobRetentionMs && !maxTerminalJobs) {
       return;
     }
 
@@ -2410,53 +2412,67 @@ export function createRelayApp({
     }
 
     lastRetentionSweepAt = clock();
-
-    const state = await store.read();
-    const sessions = Object.values(state.sessions || {});
-    const pendingSessionIds = new Set(
-      Object.values(state.jobs || {})
-        .filter((job) => job.status === "queued" || job.status === "running")
-        .map((job) => job.sessionId)
-        .filter(Boolean),
-    );
     let archivedCount = 0;
     let prunedCount = 0;
 
-    for (const session of sessions) {
-      if (session.isBusy) {
-        continue;
-      }
+    if (autoArchiveAfterMs || autoPruneAfterMs) {
+      const state = await store.read();
+      const sessions = Object.values(state.sessions || {});
+      const pendingSessionIds = new Set(
+        Object.values(state.jobs || {})
+          .filter((job) => job.status === "queued" || job.status === "running")
+          .map((job) => job.sessionId)
+          .filter(Boolean),
+      );
 
-      const updatedAtMs = Date.parse(session.updatedAt || session.createdAt || "");
-
-      if (Number.isNaN(updatedAtMs)) {
-        continue;
-      }
-
-      const ageMs = clock() - updatedAtMs;
-
-      if (pendingSessionIds.has(session.id)) {
-        continue;
-      }
-
-      if (session.status === "closed") {
-        if (autoPruneAfterMs && ageMs >= autoPruneAfterMs) {
-          await pruneSession(session);
-          prunedCount += 1;
+      for (const session of sessions) {
+        if (session.isBusy) {
+          continue;
         }
-        continue;
-      }
 
-      if (autoArchiveAfterMs && ageMs >= autoArchiveAfterMs) {
-        await archiveSession(session.id, {
-          touchUpdatedAt: false,
-        });
-        archivedCount += 1;
+        const updatedAtMs = Date.parse(session.updatedAt || session.createdAt || "");
+
+        if (Number.isNaN(updatedAtMs)) {
+          continue;
+        }
+
+        const ageMs = clock() - updatedAtMs;
+
+        if (pendingSessionIds.has(session.id)) {
+          continue;
+        }
+
+        if (session.status === "closed") {
+          if (autoPruneAfterMs && ageMs >= autoPruneAfterMs) {
+            await pruneSession(session);
+            prunedCount += 1;
+          }
+          continue;
+        }
+
+        if (autoArchiveAfterMs && ageMs >= autoArchiveAfterMs) {
+          await archiveSession(session.id, {
+            touchUpdatedAt: false,
+          });
+          archivedCount += 1;
+        }
       }
     }
 
     if (archivedCount > 0 || prunedCount > 0) {
       logger.log(`session retention archived=${archivedCount} pruned=${prunedCount}`);
+    }
+
+    if (terminalJobRetentionMs || maxTerminalJobs) {
+      const compaction = await store.compactState({
+        now: now(),
+        terminalJobRetentionMs,
+        maxTerminalJobs,
+      });
+
+      if (compaction.prunedJobIds.length > 0) {
+        logger.log(`state compaction pruned_jobs=${compaction.prunedJobIds.length}`);
+      }
     }
   }
 

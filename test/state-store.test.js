@@ -518,3 +518,152 @@ test("When cleaning stale local CLI runs, then old busy flags and stale queued p
   assert.equal(staleJob?.error, "Cancelled stale queued prompt after local CLI run timed out.");
   assert.equal(freshJob?.status, "queued");
 });
+
+test("When multiple store instances write concurrently, then file locking preserves every update", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-store-"));
+  const statePath = path.join(tempDir, "state.json");
+  const storeA = new StateStore(statePath);
+  const storeB = new StateStore(statePath);
+
+  await Promise.all(Array.from({ length: 20 }, (_, index) => {
+    const store = index % 2 === 0 ? storeA : storeB;
+    return store.saveSession({
+      id: `session-lock-${index}`,
+      label: `Locked ${index}`,
+      cwd: "/repo",
+      createdAt: "2026-04-02T10:00:00.000Z",
+      updatedAt: `2026-04-02T10:${String(index).padStart(2, "0")}:00.000Z`,
+    });
+  }));
+
+  const sessions = await new StateStore(statePath).listSessions({ includeClosed: true });
+
+  assert.equal(sessions.length, 20);
+  assert.equal(
+    sessions.filter((session) => session.id.startsWith("session-lock-")).length,
+    20,
+  );
+});
+
+test("When compacting state, then old terminal jobs are pruned while active jobs remain", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-store-"));
+  const store = new StateStore(path.join(tempDir, "state.json"));
+
+  await store.saveSession({
+    id: "session-compact",
+    label: "Compact",
+    cwd: "/repo",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+  });
+  await store.createJob({
+    id: "job-compact-old-completed",
+    sessionId: "session-compact",
+    hostId: "mbp",
+    prompt: "old completed",
+    status: "completed",
+    createdAt: "2026-04-01T10:00:00.000Z",
+    updatedAt: "2026-04-01T11:00:00.000Z",
+    completedAt: "2026-04-01T11:00:00.000Z",
+  });
+  await store.createJob({
+    id: "job-compact-old-failed",
+    sessionId: "session-compact",
+    hostId: "mbp",
+    prompt: "old failed",
+    status: "failed",
+    createdAt: "2026-04-01T10:05:00.000Z",
+    updatedAt: "2026-04-01T11:05:00.000Z",
+    completedAt: "2026-04-01T11:05:00.000Z",
+  });
+  await store.createJob({
+    id: "job-compact-fresh-completed",
+    sessionId: "session-compact",
+    hostId: "mbp",
+    prompt: "fresh completed",
+    status: "completed",
+    createdAt: "2026-04-10T09:00:00.000Z",
+    updatedAt: "2026-04-10T09:05:00.000Z",
+    completedAt: "2026-04-10T09:05:00.000Z",
+  });
+  await store.createJob({
+    id: "job-compact-queued",
+    sessionId: "session-compact",
+    hostId: "mbp",
+    prompt: "queued",
+    status: "queued",
+    createdAt: "2026-04-01T10:10:00.000Z",
+    updatedAt: "2026-04-01T10:10:00.000Z",
+  });
+
+  const dryRun = await store.compactState({
+    now: "2026-04-10T12:00:00.000Z",
+    terminalJobRetentionMs: 7 * 24 * 60 * 60 * 1000,
+    dryRun: true,
+  });
+  const oldCompletedAfterDryRun = await store.getJob("job-compact-old-completed");
+
+  assert.deepEqual(dryRun.prunedJobIds, [
+    "job-compact-old-failed",
+    "job-compact-old-completed",
+  ]);
+  assert.equal(dryRun.before.jobs, 4);
+  assert.equal(dryRun.after.jobs, 2);
+  assert.equal(oldCompletedAfterDryRun?.status, "completed");
+
+  const compacted = await store.compactState({
+    now: "2026-04-10T12:00:00.000Z",
+    terminalJobRetentionMs: 7 * 24 * 60 * 60 * 1000,
+    dryRun: false,
+  });
+  const oldCompleted = await store.getJob("job-compact-old-completed");
+  const oldFailed = await store.getJob("job-compact-old-failed");
+  const freshCompleted = await store.getJob("job-compact-fresh-completed");
+  const queued = await store.getJob("job-compact-queued");
+
+  assert.deepEqual(compacted.prunedJobIds, [
+    "job-compact-old-failed",
+    "job-compact-old-completed",
+  ]);
+  assert.equal(oldCompleted, null);
+  assert.equal(oldFailed, null);
+  assert.equal(freshCompleted?.status, "completed");
+  assert.equal(queued?.status, "queued");
+});
+
+test("When compacting state with a terminal job cap, then only the newest terminal jobs are kept", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-store-"));
+  const store = new StateStore(path.join(tempDir, "state.json"));
+
+  for (const [id, completedAt] of [
+    ["job-cap-oldest", "2026-04-01T10:00:00.000Z"],
+    ["job-cap-middle", "2026-04-02T10:00:00.000Z"],
+    ["job-cap-newest", "2026-04-03T10:00:00.000Z"],
+  ]) {
+    await store.createJob({
+      id,
+      sessionId: "session-cap",
+      hostId: "mbp",
+      prompt: id,
+      status: "completed",
+      createdAt: completedAt,
+      updatedAt: completedAt,
+      completedAt,
+    });
+  }
+
+  const result = await store.compactState({
+    now: "2026-04-10T12:00:00.000Z",
+    terminalJobRetentionMs: 0,
+    maxTerminalJobs: 1,
+    dryRun: false,
+  });
+  const newest = await store.getJob("job-cap-newest");
+  const middle = await store.getJob("job-cap-middle");
+  const oldest = await store.getJob("job-cap-oldest");
+
+  assert.deepEqual(result.prunedJobIds, ["job-cap-middle", "job-cap-oldest"]);
+  assert.equal(newest?.status, "completed");
+  assert.equal(middle, null);
+  assert.equal(oldest, null);
+});

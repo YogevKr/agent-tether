@@ -47,6 +47,12 @@ export function getBotConfig() {
       autoPruneAfterMs:
         parseNonNegativeInt(process.env.RELAY_AUTO_PRUNE_AFTER_DAYS, 60) * 24 * 60 * 60 * 1000,
     },
+    stateCompaction: {
+      terminalJobRetentionMs:
+        parseNonNegativeInt(process.env.RELAY_TERMINAL_JOB_PRUNE_AFTER_DAYS, 14) * 24 * 60 * 60 * 1000,
+      maxTerminalJobs:
+        parseNonNegativeInt(process.env.RELAY_MAX_TERMINAL_JOBS, 5000),
+    },
   };
 }
 

@@ -302,6 +302,18 @@ npm run cleanup-stale -- --host <host-id> --older-than-hours 24 --execute
 
 Use `--all-hosts` only when you intentionally want to release stale local CLI busy flags across every host in the shared state file.
 
+Compact old terminal job history with a dry run first:
+
+```bash
+npm run compact-state -- --terminal-job-retention-days 14 --max-terminal-jobs 5000
+```
+
+Apply it after reviewing the output:
+
+```bash
+npm run compact-state -- --terminal-job-retention-days 14 --max-terminal-jobs 5000 --execute
+```
+
 ## Before Open Sourcing
 
 - rotate any bot tokens used during development

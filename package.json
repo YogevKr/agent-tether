@@ -30,6 +30,7 @@
     "install-launch-agent": "node src/install-launch-agent.js",
     "uninstall-launch-agent": "node src/uninstall-launch-agent.js",
     "cleanup-stale": "node src/cleanup-stale.js",
+    "compact-state": "node src/compact-state.js",
     "smoke": "node src/smoke.js",
     "test": "node --test",
     "check": "node --check src/*.js test/*.js"

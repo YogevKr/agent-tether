@@ -7,10 +7,22 @@ const EMPTY_STATE = {
   jobs: {},
   hosts: {},
 };
+const DEFAULT_LOCK_TIMEOUT_MS = 30000;
+const DEFAULT_LOCK_RETRY_MS = 25;
+const DEFAULT_STALE_LOCK_MS = 10 * 60 * 1000;
 
 export class StateStore {
-  constructor(filePath, { fallbackReadPaths = [] } = {}) {
+  constructor(filePath, {
+    fallbackReadPaths = [],
+    lockTimeoutMs = DEFAULT_LOCK_TIMEOUT_MS,
+    lockRetryMs = DEFAULT_LOCK_RETRY_MS,
+    staleLockMs = DEFAULT_STALE_LOCK_MS,
+  } = {}) {
     this.filePath = filePath;
+    this.lockPath = `${filePath}.lock`;
+    this.lockTimeoutMs = lockTimeoutMs;
+    this.lockRetryMs = lockRetryMs;
+    this.staleLockMs = staleLockMs;
     this.fallbackReadPaths = [...new Set(
       fallbackReadPaths
         .map((candidate) => String(candidate || ""))
@@ -510,6 +522,66 @@ export class StateStore {
     });
   }
 
+  async compactState({
+    now = new Date().toISOString(),
+    terminalJobRetentionMs = 14 * 24 * 60 * 60 * 1000,
+    maxTerminalJobs = 5000,
+    dryRun = false,
+  } = {}) {
+    const cutoffMs = terminalJobRetentionMs > 0
+      ? buildCutoffMs(now, terminalJobRetentionMs)
+      : null;
+
+    return this.runExclusive(async () => {
+      const state = await this.readFromDisk();
+      const terminalJobs = Object.values(state.jobs)
+        .filter((job) => isTerminalJobStatus(job.status))
+        .sort(compareJobsNewestFirst);
+      const prunedJobIds = new Set();
+      const before = buildStateStats(state);
+
+      if (cutoffMs !== null) {
+        for (const job of terminalJobs) {
+          if (isAtOrBefore(job.completedAt || job.updatedAt || job.createdAt, cutoffMs)) {
+            prunedJobIds.add(job.id);
+          }
+        }
+      }
+
+      if (maxTerminalJobs > 0) {
+        terminalJobs
+          .filter((job) => !prunedJobIds.has(job.id))
+          .slice(maxTerminalJobs)
+          .forEach((job) => prunedJobIds.add(job.id));
+      }
+
+      if (!dryRun) {
+        for (const jobId of prunedJobIds) {
+          delete state.jobs[jobId];
+        }
+      }
+
+      const after = dryRun
+        ? {
+            ...before,
+            jobs: before.jobs - prunedJobIds.size,
+            terminalJobs: before.terminalJobs - prunedJobIds.size,
+          }
+        : buildStateStats(state);
+
+      if (!dryRun && prunedJobIds.size > 0) {
+        await this.writeToDisk(state);
+      }
+
+      return {
+        dryRun: Boolean(dryRun),
+        prunedJobIds: [...prunedJobIds],
+        before,
+        after,
+      };
+    });
+  }
+
   async pullQueuedJob(hostId, { now = new Date().toISOString() } = {}) {
     return this.runExclusive(async () => {
       const state = await this.readFromDisk();
@@ -551,12 +623,109 @@ export class StateStore {
   }
 
   async runExclusive(operation) {
-    const next = this.pendingOperation.then(operation, operation);
+    const runOperation = () => this.runWithFileLock(operation);
+    const next = this.pendingOperation.then(runOperation, runOperation);
     this.pendingOperation = next.then(
       () => undefined,
       () => undefined,
     );
     return next;
+  }
+
+  async runWithFileLock(operation) {
+    const lockToken = await this.acquireFileLock();
+
+    try {
+      return await operation();
+    } finally {
+      await this.releaseFileLock(lockToken);
+    }
+  }
+
+  async acquireFileLock() {
+    await fs.mkdir(path.dirname(this.filePath), { recursive: true });
+    const startedAt = Date.now();
+
+    while (true) {
+      try {
+        await fs.mkdir(this.lockPath);
+        const token = `${process.pid}-${Date.now()}-${Math.random()
+          .toString(16)
+          .slice(2)}`;
+
+        try {
+          await fs.writeFile(
+            path.join(this.lockPath, "owner.json"),
+            `${JSON.stringify({
+              token,
+              pid: process.pid,
+              createdAt: new Date().toISOString(),
+            }, null, 2)}\n`,
+          );
+        } catch (error) {
+          await fs.rm(this.lockPath, { recursive: true, force: true }).catch(() => {});
+          throw error;
+        }
+
+        return token;
+      } catch (error) {
+        if (error.code !== "EEXIST") {
+          throw error;
+        }
+
+        if (await this.tryRemoveStaleLock()) {
+          continue;
+        }
+
+        if (Date.now() - startedAt >= this.lockTimeoutMs) {
+          throw new Error(`Timed out waiting for state lock: ${this.lockPath}`);
+        }
+
+        await delay(this.lockRetryMs);
+      }
+    }
+  }
+
+  async tryRemoveStaleLock() {
+    try {
+      const stats = await fs.stat(this.lockPath);
+
+      if (Date.now() - stats.mtimeMs < this.staleLockMs) {
+        return false;
+      }
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        return true;
+      }
+
+      throw error;
+    }
+
+    await fs.rm(this.lockPath, { recursive: true, force: true });
+    return true;
+  }
+
+  async releaseFileLock(lockToken) {
+    const owner = await this.readLockOwner();
+
+    if (owner?.token && owner.token !== lockToken) {
+      return;
+    }
+
+    await fs.rm(this.lockPath, { recursive: true, force: true });
+  }
+
+  async readLockOwner() {
+    try {
+      const content = await fs.readFile(path.join(this.lockPath, "owner.json"), "utf8");
+      return JSON.parse(content);
+    } catch (error) {
+      if (error.code === "ENOENT" || error instanceof SyntaxError) {
+        return null;
+      }
+
+      throw error;
+    }
   }
 
   async readFromDisk() {
@@ -581,8 +750,14 @@ export class StateStore {
     const tempPath = `${this.filePath}.${process.pid}.${Date.now()}.${Math.random()
       .toString(16)
       .slice(2)}.tmp`;
-    await fs.writeFile(tempPath, JSON.stringify(state, null, 2));
-    await fs.rename(tempPath, this.filePath);
+
+    try {
+      await fs.writeFile(tempPath, JSON.stringify(state, null, 2));
+      await fs.rename(tempPath, this.filePath);
+    } catch (error) {
+      await fs.rm(tempPath, { force: true }).catch(() => {});
+      throw error;
+    }
   }
 }
 
@@ -796,6 +971,12 @@ function compareJobs(left, right) {
   return leftTime - rightTime;
 }
 
+function compareJobsNewestFirst(left, right) {
+  const leftTime = Date.parse(left.completedAt || left.updatedAt || left.createdAt || 0);
+  const rightTime = Date.parse(right.completedAt || right.updatedAt || right.createdAt || 0);
+  return rightTime - leftTime || left.id.localeCompare(right.id);
+}
+
 function compareHosts(left, right) {
   const leftTime = Date.parse(left.lastSeenAt || 0);
   const rightTime = Date.parse(right.lastSeenAt || 0);
@@ -820,6 +1001,27 @@ function buildCutoffMs(now, olderThanMs) {
 function isAtOrBefore(value, cutoffMs) {
   const parsed = Date.parse(value || "");
   return !Number.isNaN(parsed) && parsed <= cutoffMs;
+}
+
+function isTerminalJobStatus(status) {
+  return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+function buildStateStats(state) {
+  const jobs = Object.values(state.jobs || {});
+
+  return {
+    sessions: Object.keys(state.sessions || {}).length,
+    jobs: jobs.length,
+    terminalJobs: jobs.filter((job) => isTerminalJobStatus(job.status)).length,
+    hosts: Object.keys(state.hosts || {}).length,
+  };
+}
+
+async function delay(ms) {
+  await new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function syncBindingsForSession(state, session) {
