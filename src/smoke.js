@@ -6,6 +6,11 @@ import {
   hasClaudeHooksInstalled,
   hasCodexHooksInstalled,
 } from "./hook-config.js";
+import {
+  findMissingRequiredHosts,
+  parseRequiredHostRefs,
+  partitionHostsByHeartbeat,
+} from "./smoke-health.js";
 import { TelegramClient } from "./telegram.js";
 
 const botConfig = getBotConfig();
@@ -37,8 +42,14 @@ async function main() {
     readLocalHookStatus(),
   ]);
 
-  const freshHosts = hosts.filter((host) => isFreshHeartbeat(host.lastSeenAt));
-  const staleHosts = hosts.filter((host) => !isFreshHeartbeat(host.lastSeenAt));
+  const requiredHostRefs = parseRequiredHostRefs(
+    process.env.RELAY_SMOKE_REQUIRED_HOSTS,
+    codexConfig.hostId,
+  );
+  const { freshHosts, staleHosts } = partitionHostsByHeartbeat(hosts, {
+    maxAgeMs: HEARTBEAT_MAX_AGE_MS,
+  });
+  const missingRequiredHosts = findMissingRequiredHosts(freshHosts, requiredHostRefs);
 
   assert(health.ok, "hub health check failed");
   assert(Boolean(me.username), "bot username missing");
@@ -51,6 +62,13 @@ async function main() {
     freshHosts.length > 0,
     `no fresh host heartbeats within ${Math.round(HEARTBEAT_MAX_AGE_MS / 1000)}s`,
   );
+  assert(
+    missingRequiredHosts.length === 0,
+    [
+      `missing fresh required host heartbeat(s) within ${Math.round(HEARTBEAT_MAX_AGE_MS / 1000)}s: ${missingRequiredHosts.join(", ")}`,
+      `fresh hosts: ${freshHosts.map((host) => host.label || host.id).join(", ") || "(none)"}`,
+    ].join("; "),
+  );
 
   console.log(`smoke ok bot=@${me.username}`);
   console.log(`hub=${hubUrl}`);
@@ -58,6 +76,7 @@ async function main() {
   console.log(`private_commands=${privateCommands.length}`);
   console.log(`group_commands=${groupCommands.length}`);
   console.log(`hooks=codex,claude`);
+  console.log(`required_hosts=${requiredHostRefs.join(", ") || "(none)"}`);
   console.log(`fresh_hosts=${freshHosts.map((host) => host.label).join(", ")}`);
 
   if (staleHosts.length > 0) {
@@ -110,16 +129,6 @@ async function readJsonFile(filePath) {
   }
 
   return JSON.parse(raw);
-}
-
-function isFreshHeartbeat(lastSeenAt) {
-  const parsed = Date.parse(lastSeenAt || "");
-
-  if (Number.isNaN(parsed)) {
-    return false;
-  }
-
-  return Date.now() - parsed <= HEARTBEAT_MAX_AGE_MS;
 }
 
 function assert(condition, message) {

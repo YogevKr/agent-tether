@@ -36,14 +36,14 @@ async function installConfigToml() {
     ? current.replace("[features]", "[features]\ncodex_hooks = true")
     : `${current.trimEnd()}\n\n[features]\ncodex_hooks = true\n`;
 
-  await fs.writeFile(CONFIG_PATH, next.replace(/^\n+/, ""));
+  await writeFileAtomic(CONFIG_PATH, next.replace(/^\n+/, ""));
 }
 
 async function installHooksJson() {
   const current = await fs.readFile(HOOKS_PATH, "utf8").catch(() => "");
   const parsed = current ? JSON.parse(current) : {};
 
-  await fs.writeFile(
+  await writeFileAtomic(
     HOOKS_PATH,
     `${JSON.stringify(ensureCodexHooksConfig(parsed), null, 2)}\n`,
   );
@@ -53,10 +53,24 @@ async function installClaudeSettingsJson() {
   const current = await fs.readFile(CLAUDE_SETTINGS_PATH, "utf8").catch(() => "");
   const parsed = current ? JSON.parse(current) : {};
 
-  await fs.writeFile(
+  await writeFileAtomic(
     CLAUDE_SETTINGS_PATH,
     `${JSON.stringify(ensureClaudeHooksConfig(parsed), null, 2)}\n`,
   );
+}
+
+async function writeFileAtomic(filePath, content) {
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random()
+    .toString(16)
+    .slice(2)}.tmp`;
+
+  try {
+    await fs.writeFile(tempPath, content);
+    await fs.rename(tempPath, filePath);
+  } catch (error) {
+    await fs.rm(tempPath, { force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 await main();

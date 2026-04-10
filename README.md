@@ -280,6 +280,28 @@ Run a quick operator smoke check against the configured hub, worker heartbeats, 
 npm run smoke
 ```
 
+By default, smoke requires the configured local host id to have a fresh heartbeat. To require specific hosts by id or label:
+
+```bash
+RELAY_SMOKE_REQUIRED_HOSTS=Yogevs-MacBook-Pro-6,Yogevs-Mac-mini npm run smoke
+```
+
+## Queue cleanup
+
+If Telegram prompts are stuck behind an abandoned local CLI run, run a dry-run cleanup first:
+
+```bash
+npm run cleanup-stale -- --host <host-id> --older-than-hours 24
+```
+
+Apply it after reviewing the output:
+
+```bash
+npm run cleanup-stale -- --host <host-id> --older-than-hours 24 --execute
+```
+
+Use `--all-hosts` only when you intentionally want to release stale local CLI busy flags across every host in the shared state file.
+
 ## Before Open Sourcing
 
 - rotate any bot tokens used during development

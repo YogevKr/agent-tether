@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildLaunchctlServiceTarget,
   buildLaunchAgentPlist,
   getLaunchAgentPaths,
   LAUNCH_AGENT_MODE,
@@ -46,4 +47,11 @@ test("When generating the worker launch agent plist, then it starts the worker w
   assert.match(plist, /<string>\/usr\/bin\/env<\/string>/);
   assert.match(plist, /<string>\/opt\/homebrew\/bin\/node<\/string>/);
   assert.match(plist, /<string>\/Users\/example\/projects\/agent-tether\/src\/worker.js<\/string>/);
+});
+
+test("When building a launchctl service target, then it includes the gui domain and label", () => {
+  assert.equal(
+    buildLaunchctlServiceTarget(LAUNCH_AGENT_MODE.worker.label, 501),
+    "gui/501/dev.agent-tether.worker",
+  );
 });

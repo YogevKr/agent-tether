@@ -24,6 +24,10 @@ export const LAUNCH_AGENT_MODE = {
 
 export const LAUNCH_AGENT_LABEL = LAUNCH_AGENT_MODE.hub.label;
 
+export function buildLaunchctlServiceTarget(label = LAUNCH_AGENT_LABEL, uid = process.getuid()) {
+  return `gui/${uid}/${label}`;
+}
+
 export function getLaunchAgentPaths({
   homeDir = os.homedir(),
   mode = "hub",
@@ -99,12 +103,13 @@ export async function writeLaunchAgentPlist(options = {}) {
 
 export async function launchctlBootout(label = LAUNCH_AGENT_LABEL) {
   try {
-    await execFileAsync("launchctl", ["bootout", launchDomain(), label]);
+    await execFileAsync("launchctl", ["bootout", buildLaunchctlServiceTarget(label)]);
   } catch (error) {
     const output = `${error.stdout || ""}\n${error.stderr || ""}\n${error.message || ""}`;
 
     if (
       !output.includes("Could not find service") &&
+      !output.includes("No such process") &&
       !output.includes("Boot-out failed: 5")
     ) {
       throw error;
@@ -116,8 +121,12 @@ export async function launchctlBootstrap(plistPath) {
   await execFileAsync("launchctl", ["bootstrap", launchDomain(), plistPath]);
 }
 
+export async function launchctlPrint(label = LAUNCH_AGENT_LABEL) {
+  return execFileAsync("launchctl", ["print", buildLaunchctlServiceTarget(label)]);
+}
+
 export async function launchctlKickstart(label = LAUNCH_AGENT_LABEL) {
-  await execFileAsync("launchctl", ["kickstart", "-k", `${launchDomain()}/${label}`]);
+  await execFileAsync("launchctl", ["kickstart", "-k", buildLaunchctlServiceTarget(label)]);
 }
 
 export async function launchctlRemove(label = LAUNCH_AGENT_LABEL) {

@@ -426,6 +426,90 @@ export class StateStore {
     });
   }
 
+  async cleanupStaleLocalCliRuns({
+    hostId = "",
+    olderThanMs = 24 * 60 * 60 * 1000,
+    now = new Date().toISOString(),
+    dryRun = true,
+    errorMessage = "Cancelled stale queued prompt after local CLI run timed out.",
+  } = {}) {
+    const cutoffMs = buildCutoffMs(now, olderThanMs);
+
+    return this.runExclusive(async () => {
+      const state = await this.readFromDisk();
+      const targetHostId = String(hostId || "");
+      const staleSessionIds = new Set();
+      const cancelledJobIds = [];
+
+      for (const [sessionId, session] of Object.entries(state.sessions)) {
+        if (!session.isBusy || session.activeRunSource !== "local-cli") {
+          continue;
+        }
+
+        if (targetHostId && session.hostId !== targetHostId) {
+          continue;
+        }
+
+        if (!isAtOrBefore(session.updatedAt || session.createdAt, cutoffMs)) {
+          continue;
+        }
+
+        staleSessionIds.add(sessionId);
+
+        if (!dryRun) {
+          state.sessions[sessionId] = normalizeSession({
+            ...session,
+            isBusy: false,
+            activeRunSource: "",
+            updatedAt: now,
+          });
+        }
+      }
+
+      for (const [jobId, job] of Object.entries(state.jobs)) {
+        if (job.status !== "queued" || job.kind !== "run-turn") {
+          continue;
+        }
+
+        if (targetHostId && job.hostId !== targetHostId) {
+          continue;
+        }
+
+        if (state.sessions[job.sessionId] && !staleSessionIds.has(job.sessionId)) {
+          continue;
+        }
+
+        if (!isAtOrBefore(job.updatedAt || job.createdAt, cutoffMs)) {
+          continue;
+        }
+
+        cancelledJobIds.push(jobId);
+
+        if (!dryRun) {
+          state.jobs[jobId] = normalizeJob({
+            ...job,
+            status: "cancelled",
+            updatedAt: now,
+            completedAt: now,
+            error: job.error || errorMessage,
+          });
+        }
+      }
+
+      if (!dryRun && (staleSessionIds.size > 0 || cancelledJobIds.length > 0)) {
+        await this.writeToDisk(state);
+      }
+
+      return {
+        dryRun: Boolean(dryRun),
+        hostId: targetHostId,
+        cutoffAt: new Date(cutoffMs).toISOString(),
+        clearedSessionIds: [...staleSessionIds],
+        cancelledJobIds,
+      };
+    });
+  }
+
   async pullQueuedJob(hostId, { now = new Date().toISOString() } = {}) {
     return this.runExclusive(async () => {
       const state = await this.readFromDisk();
@@ -716,6 +800,26 @@ function compareHosts(left, right) {
   const leftTime = Date.parse(left.lastSeenAt || 0);
   const rightTime = Date.parse(right.lastSeenAt || 0);
   return rightTime - leftTime || left.label.localeCompare(right.label);
+}
+
+function buildCutoffMs(now, olderThanMs) {
+  const parsedNow = Date.parse(now || "");
+  const parsedOlderThanMs = Number(olderThanMs);
+
+  if (Number.isNaN(parsedNow)) {
+    throw new Error(`Invalid cleanup timestamp: ${now}`);
+  }
+
+  if (!Number.isFinite(parsedOlderThanMs) || parsedOlderThanMs < 0) {
+    throw new Error(`olderThanMs must be a non-negative number: ${olderThanMs}`);
+  }
+
+  return parsedNow - parsedOlderThanMs;
+}
+
+function isAtOrBefore(value, cutoffMs) {
+  const parsed = Date.parse(value || "");
+  return !Number.isNaN(parsed) && parsed <= cutoffMs;
 }
 
 function syncBindingsForSession(state, session) {

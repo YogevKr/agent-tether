@@ -416,3 +416,105 @@ test("When recovering interrupted runs for one host, then running jobs fail and 
   assert.equal(untouchedSession?.isBusy, true);
   assert.equal(untouchedJob?.status, "running");
 });
+
+test("When cleaning stale local CLI runs, then old busy flags and stale queued prompts are cleared safely", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-store-"));
+  const store = new StateStore(path.join(tempDir, "state.json"));
+
+  await store.saveSession({
+    id: "session-cleanup-stale",
+    label: "Stale local",
+    cwd: "/repo",
+    hostId: "mbp",
+    isBusy: true,
+    activeRunSource: "local-cli",
+    createdAt: "2026-04-02T07:00:00.000Z",
+    updatedAt: "2026-04-02T08:00:00.000Z",
+  });
+  await store.saveSession({
+    id: "session-cleanup-fresh",
+    label: "Fresh local",
+    cwd: "/repo",
+    hostId: "mbp",
+    isBusy: true,
+    activeRunSource: "local-cli",
+    createdAt: "2026-04-02T09:30:00.000Z",
+    updatedAt: "2026-04-02T09:30:00.000Z",
+  });
+  await store.saveSession({
+    id: "session-cleanup-telegram",
+    label: "Telegram",
+    cwd: "/repo",
+    hostId: "mbp",
+    isBusy: true,
+    activeRunSource: "telegram",
+    createdAt: "2026-04-02T07:00:00.000Z",
+    updatedAt: "2026-04-02T08:00:00.000Z",
+  });
+  await store.saveSession({
+    id: "session-cleanup-other-host",
+    label: "Other host",
+    cwd: "/repo",
+    hostId: "mini",
+    isBusy: true,
+    activeRunSource: "local-cli",
+    createdAt: "2026-04-02T07:00:00.000Z",
+    updatedAt: "2026-04-02T08:00:00.000Z",
+  });
+  await store.createJob({
+    id: "job-cleanup-stale",
+    sessionId: "session-cleanup-stale",
+    hostId: "mbp",
+    prompt: "old queued prompt",
+    status: "queued",
+    createdAt: "2026-04-02T08:05:00.000Z",
+    updatedAt: "2026-04-02T08:05:00.000Z",
+  });
+  await store.createJob({
+    id: "job-cleanup-fresh",
+    sessionId: "session-cleanup-stale",
+    hostId: "mbp",
+    prompt: "fresh queued prompt",
+    status: "queued",
+    createdAt: "2026-04-02T09:30:00.000Z",
+    updatedAt: "2026-04-02T09:30:00.000Z",
+  });
+
+  const dryRun = await store.cleanupStaleLocalCliRuns({
+    hostId: "mbp",
+    olderThanMs: 60 * 60 * 1000,
+    now: "2026-04-02T10:00:00.000Z",
+    dryRun: true,
+  });
+  const dryRunSession = await store.getSession("session-cleanup-stale");
+
+  assert.equal(dryRun.dryRun, true);
+  assert.deepEqual(dryRun.clearedSessionIds, ["session-cleanup-stale"]);
+  assert.deepEqual(dryRun.cancelledJobIds, ["job-cleanup-stale"]);
+  assert.equal(dryRunSession?.isBusy, true);
+
+  const cleanup = await store.cleanupStaleLocalCliRuns({
+    hostId: "mbp",
+    olderThanMs: 60 * 60 * 1000,
+    now: "2026-04-02T10:00:00.000Z",
+    dryRun: false,
+  });
+  const staleSession = await store.getSession("session-cleanup-stale");
+  const freshSession = await store.getSession("session-cleanup-fresh");
+  const telegramSession = await store.getSession("session-cleanup-telegram");
+  const otherHostSession = await store.getSession("session-cleanup-other-host");
+  const staleJob = await store.getJob("job-cleanup-stale");
+  const freshJob = await store.getJob("job-cleanup-fresh");
+
+  assert.equal(cleanup.dryRun, false);
+  assert.deepEqual(cleanup.clearedSessionIds, ["session-cleanup-stale"]);
+  assert.deepEqual(cleanup.cancelledJobIds, ["job-cleanup-stale"]);
+  assert.equal(staleSession?.isBusy, false);
+  assert.equal(staleSession?.activeRunSource, "");
+  assert.equal(freshSession?.isBusy, true);
+  assert.equal(telegramSession?.isBusy, true);
+  assert.equal(otherHostSession?.isBusy, true);
+  assert.equal(staleJob?.status, "cancelled");
+  assert.equal(staleJob?.error, "Cancelled stale queued prompt after local CLI run timed out.");
+  assert.equal(freshJob?.status, "queued");
+});
