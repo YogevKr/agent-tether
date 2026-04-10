@@ -1,15 +1,15 @@
 import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-import { PROJECT_ROOT } from "./config.js";
-
-const CODEX_HOME = path.join(os.homedir(), ".codex");
-const CONFIG_PATH = path.join(CODEX_HOME, "config.toml");
-const HOOKS_PATH = path.join(CODEX_HOME, "hooks.json");
-const CLAUDE_HOME = path.join(os.homedir(), ".claude");
-const CLAUDE_SETTINGS_PATH = path.join(CLAUDE_HOME, "settings.json");
-const CODEX_HOOK_COMMAND = `/usr/bin/env node ${path.join(PROJECT_ROOT, "src/codex-hook.js")}`;
-const CLAUDE_HOOK_COMMAND = `/usr/bin/env node ${path.join(PROJECT_ROOT, "src/claude-hook.js")}`;
+import {
+  CLAUDE_HOME,
+  CLAUDE_HOOK_COMMAND,
+  CLAUDE_SETTINGS_PATH,
+  CODEX_HOME,
+  CODEX_HOOK_COMMAND,
+  CONFIG_PATH,
+  HOOKS_PATH,
+  ensureClaudeHooksConfig,
+  ensureCodexHooksConfig,
+} from "./hook-config.js";
 
 async function main() {
   await fs.mkdir(CODEX_HOME, { recursive: true });
@@ -42,93 +42,21 @@ async function installConfigToml() {
 async function installHooksJson() {
   const current = await fs.readFile(HOOKS_PATH, "utf8").catch(() => "");
   const parsed = current ? JSON.parse(current) : {};
-  const hooks = parsed.hooks || {};
-
-  hooks.SessionStart = mergeHookEntries(hooks.SessionStart, "startup|resume");
-  hooks.UserPromptSubmit = mergeHookEntries(hooks.UserPromptSubmit);
-  hooks.Stop = mergeHookEntries(hooks.Stop);
 
   await fs.writeFile(
     HOOKS_PATH,
-    `${JSON.stringify({ ...parsed, hooks }, null, 2)}\n`,
+    `${JSON.stringify(ensureCodexHooksConfig(parsed), null, 2)}\n`,
   );
-}
-
-function mergeHookEntries(entries = [], matcher = undefined) {
-  const list = Array.isArray(entries) ? [...entries] : [];
-  const existing = list.find((entry) => entry.matcher === matcher || (!matcher && !entry.matcher));
-
-  if (existing) {
-    existing.hooks = mergeCommands(existing.hooks || []);
-    return list;
-  }
-
-  list.push({
-    ...(matcher ? { matcher } : {}),
-    hooks: mergeCommands([]),
-  });
-
-  return list;
-}
-
-function mergeCommands(commands) {
-  if (commands.some((hook) => hook.type === "command" && hook.command === CODEX_HOOK_COMMAND)) {
-    return commands;
-  }
-
-  return [
-    ...commands,
-    {
-      type: "command",
-      command: CODEX_HOOK_COMMAND,
-    },
-  ];
 }
 
 async function installClaudeSettingsJson() {
   const current = await fs.readFile(CLAUDE_SETTINGS_PATH, "utf8").catch(() => "");
   const parsed = current ? JSON.parse(current) : {};
-  const hooks = parsed.hooks || {};
-
-  hooks.SessionStart = mergeClaudeHookEntries(hooks.SessionStart, "startup|resume");
-  hooks.UserPromptSubmit = mergeClaudeHookEntries(hooks.UserPromptSubmit);
-  hooks.Stop = mergeClaudeHookEntries(hooks.Stop);
 
   await fs.writeFile(
     CLAUDE_SETTINGS_PATH,
-    `${JSON.stringify({ ...parsed, hooks }, null, 2)}\n`,
+    `${JSON.stringify(ensureClaudeHooksConfig(parsed), null, 2)}\n`,
   );
-}
-
-function mergeClaudeHookEntries(entries = [], matcher = undefined) {
-  const list = Array.isArray(entries) ? [...entries] : [];
-  const existing = list.find((entry) => entry.matcher === matcher || (!matcher && !entry.matcher));
-
-  if (existing) {
-    existing.hooks = mergeClaudeCommands(existing.hooks || []);
-    return list;
-  }
-
-  list.push({
-    ...(matcher ? { matcher } : {}),
-    hooks: mergeClaudeCommands([]),
-  });
-
-  return list;
-}
-
-function mergeClaudeCommands(commands) {
-  if (commands.some((hook) => hook.type === "command" && hook.command === CLAUDE_HOOK_COMMAND)) {
-    return commands;
-  }
-
-  return [
-    ...commands,
-    {
-      type: "command",
-      command: CLAUDE_HOOK_COMMAND,
-    },
-  ];
 }
 
 await main();

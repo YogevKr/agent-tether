@@ -274,7 +274,7 @@ npm test
 
 ## Smoke check
 
-Run a quick operator smoke check against the configured hub, worker heartbeats, forum, and bot command sync:
+Run a quick operator smoke check against the configured hub, worker heartbeats, local Codex/Claude hook install, forum, and bot command sync:
 
 ```bash
 npm run smoke

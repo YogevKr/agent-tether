@@ -1,4 +1,11 @@
+import fs from "node:fs/promises";
 import { getBotConfig, getCodexConfig } from "./config.js";
+import {
+  CLAUDE_SETTINGS_PATH,
+  HOOKS_PATH,
+  hasClaudeHooksInstalled,
+  hasCodexHooksInstalled,
+} from "./hook-config.js";
 import { TelegramClient } from "./telegram.js";
 
 const botConfig = getBotConfig();
@@ -16,7 +23,7 @@ const HEARTBEAT_MAX_AGE_MS = Number.parseInt(
 async function main() {
   const hubUrl = (codexConfig.hubUrl || `http://${botConfig.hubBindHost}:${botConfig.hubPort}`)
     .replace(/\/+$/, "");
-const [health, me, forumChat, privateCommands, groupCommands, hosts] = await Promise.all([
+  const [health, me, forumChat, privateCommands, groupCommands, hosts, hookStatus] = await Promise.all([
     fetchHubHealth(hubUrl),
     telegram.getMe(),
     telegram.getChat(botConfig.forumChatId),
@@ -27,6 +34,7 @@ const [health, me, forumChat, privateCommands, groupCommands, hosts] = await Pro
       scope: { type: "all_group_chats" },
     }),
     fetchHubHosts(hubUrl),
+    readLocalHookStatus(),
   ]);
 
   const freshHosts = hosts.filter((host) => isFreshHeartbeat(host.lastSeenAt));
@@ -37,6 +45,8 @@ const [health, me, forumChat, privateCommands, groupCommands, hosts] = await Pro
   assert(Boolean(forumChat.is_forum), "forum chat is not a forum-enabled supergroup");
   assert(privateCommands.length > 0, "private bot commands are not configured");
   assert(groupCommands.length > 0, "group bot commands are not configured");
+  assert(hookStatus.codex, `codex hooks missing in ${HOOKS_PATH}`);
+  assert(hookStatus.claude, `claude hooks missing in ${CLAUDE_SETTINGS_PATH}`);
   assert(
     freshHosts.length > 0,
     `no fresh host heartbeats within ${Math.round(HEARTBEAT_MAX_AGE_MS / 1000)}s`,
@@ -47,6 +57,7 @@ const [health, me, forumChat, privateCommands, groupCommands, hosts] = await Pro
   console.log(`forum=${forumChat.title || forumChat.id}`);
   console.log(`private_commands=${privateCommands.length}`);
   console.log(`group_commands=${groupCommands.length}`);
+  console.log(`hooks=codex,claude`);
   console.log(`fresh_hosts=${freshHosts.map((host) => host.label).join(", ")}`);
 
   if (staleHosts.length > 0) {
@@ -66,6 +77,18 @@ async function fetchHubHealth(hubUrl) {
   return response.json();
 }
 
+async function readLocalHookStatus() {
+  const [codexHooks, claudeSettings] = await Promise.all([
+    readJsonFile(HOOKS_PATH),
+    readJsonFile(CLAUDE_SETTINGS_PATH),
+  ]);
+
+  return {
+    codex: hasCodexHooksInstalled(codexHooks),
+    claude: hasClaudeHooksInstalled(claudeSettings),
+  };
+}
+
 async function fetchHubHosts(hubUrl) {
   const response = await fetch(`${hubUrl}/api/status`, {
     headers: buildHubHeaders(),
@@ -77,6 +100,16 @@ async function fetchHubHosts(hubUrl) {
 
   const body = await response.json();
   return body.hosts || [];
+}
+
+async function readJsonFile(filePath) {
+  const raw = await fs.readFile(filePath, "utf8").catch(() => "");
+
+  if (!raw) {
+    return {};
+  }
+
+  return JSON.parse(raw);
 }
 
 function isFreshHeartbeat(lastSeenAt) {

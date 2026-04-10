@@ -21,6 +21,7 @@ test("When generating the hub launch agent plist, then it starts the relay at lo
   assert.match(plist, new RegExp(`<string>${LAUNCH_AGENT_MODE.hub.label}</string>`));
   assert.match(plist, /<key>RunAtLoad<\/key>\s*<true\/>/);
   assert.match(plist, /<key>KeepAlive<\/key>\s*<true\/>/);
+  assert.match(plist, /<string>\/usr\/bin\/env<\/string>/);
   assert.match(plist, /<string>\/opt\/homebrew\/bin\/node<\/string>/);
   assert.match(plist, /<string>\/Users\/example\/projects\/agent-tether\/src\/relay.js<\/string>/);
 });
@@ -42,5 +43,7 @@ test("When generating the worker launch agent plist, then it starts the worker w
   assert.equal(paths.stdoutPath, "/Users/example/Library/Logs/agent-tether-worker.stdout.log");
   assert.equal(paths.stderrPath, "/Users/example/Library/Logs/agent-tether-worker.stderr.log");
   assert.match(plist, new RegExp(`<string>${LAUNCH_AGENT_MODE.worker.label}</string>`));
+  assert.match(plist, /<string>\/usr\/bin\/env<\/string>/);
+  assert.match(plist, /<string>\/opt\/homebrew\/bin\/node<\/string>/);
   assert.match(plist, /<string>\/Users\/example\/projects\/agent-tether\/src\/worker.js<\/string>/);
 });

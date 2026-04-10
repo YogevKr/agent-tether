@@ -44,7 +44,8 @@ export function getLaunchAgentPaths({
 export function buildLaunchAgentPlist({
   mode = "hub",
   label = getLaunchAgentModeConfig(mode).label,
-  nodeBin = process.execPath,
+  launcherBin = "/usr/bin/env",
+  nodeBin = "node",
   projectRoot = PROJECT_ROOT,
   pathEnv = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
   stdoutPath = getLaunchAgentPaths({ mode }).stdoutPath,
@@ -61,6 +62,7 @@ export function buildLaunchAgentPlist({
     `  <string>${escapeXml(label)}</string>`,
     `  <key>ProgramArguments</key>`,
     `  <array>`,
+    `    <string>${escapeXml(launcherBin)}</string>`,
     `    <string>${escapeXml(nodeBin)}</string>`,
     `    <string>${escapeXml(path.join(projectRoot, config.script))}</string>`,
     `  </array>`,
