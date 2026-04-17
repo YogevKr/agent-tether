@@ -143,6 +143,23 @@ Remove the background worker:
 npm run uninstall-launch-agent -- --mode worker
 ```
 
+## Hook latency
+
+Global Codex and Claude hooks default to async mode:
+
+- The hook command writes the event to a local queue and exits quickly.
+- A detached Node worker drains the queue in filename order, so `UserPromptSubmit` and `Stop` stay ordered.
+- Hub delivery has a bounded timeout. Default: `RELAY_HOOK_TIMEOUT_MS=2000`.
+- Background worker failures are written next to `STATE_FILE` as `hook-worker.log`.
+
+Useful knobs:
+
+```bash
+RELAY_HOOK_MODE=async        # default; use sync only while debugging hook delivery
+RELAY_HOOK_TIMEOUT_MS=2000   # hub POST timeout inside the background worker
+RELAY_HOOK_QUEUE_DIR=        # default: next to STATE_FILE under hook-queue/
+```
+
 Start your agent normally from the computer:
 
 ```bash

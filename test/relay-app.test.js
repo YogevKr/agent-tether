@@ -1918,8 +1918,8 @@ function createTestApp({
   telegram,
   runTurn,
   getGitBranch,
-  clock,
   now = () => "2026-04-02T12:00:00.000Z",
+  clock = () => Date.parse(now()),
   hubServer = null,
   botConfigOverrides = {},
 }) {

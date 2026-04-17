@@ -83,6 +83,11 @@ export function getRuntimeConfig() {
     workerConcurrency: parsePositiveInt(process.env.RELAY_WORKER_CONCURRENCY, 4),
     hubUrl: process.env.RELAY_HUB_URL || "",
     hubToken: process.env.RELAY_HUB_TOKEN || "",
+    hookMode: normalizeHookMode(process.env.RELAY_HOOK_MODE || "async"),
+    hookTimeoutMs: parsePositiveInt(process.env.RELAY_HOOK_TIMEOUT_MS, 2000),
+    hookQueueDir: process.env.RELAY_HOOK_QUEUE_DIR
+      ? resolveProjectPath(process.env.RELAY_HOOK_QUEUE_DIR)
+      : path.join(path.dirname(stateStore.filePath), "hook-queue"),
     providers: {
       codex: {
         provider: "codex",
@@ -171,6 +176,11 @@ export function getLegacyCodexConfig() {
     startRoots: getStartRoots(),
     hubUrl: process.env.RELAY_HUB_URL || "",
     hubToken: process.env.RELAY_HUB_TOKEN || "",
+    hookMode: normalizeHookMode(process.env.RELAY_HOOK_MODE || "async"),
+    hookTimeoutMs: parsePositiveInt(process.env.RELAY_HOOK_TIMEOUT_MS, 2000),
+    hookQueueDir: process.env.RELAY_HOOK_QUEUE_DIR
+      ? resolveProjectPath(process.env.RELAY_HOOK_QUEUE_DIR)
+      : path.join(path.dirname(stateStore.filePath), "hook-queue"),
   };
 }
 
@@ -401,6 +411,10 @@ function parseBoolean(value, fallback) {
   }
 
   return ["1", "true", "yes", "on"].includes(value.toLowerCase());
+}
+
+function normalizeHookMode(value) {
+  return String(value || "").toLowerCase() === "sync" ? "sync" : "async";
 }
 
 function parsePositiveInt(value, fallback) {
