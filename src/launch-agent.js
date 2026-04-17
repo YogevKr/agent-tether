@@ -51,7 +51,8 @@ export function buildLaunchAgentPlist({
   launcherBin = "/usr/bin/env",
   nodeBin = "node",
   projectRoot = PROJECT_ROOT,
-  pathEnv = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+  homeDir = os.homedir(),
+  pathEnv = buildDefaultLaunchAgentPath(homeDir),
   stdoutPath = getLaunchAgentPaths({ mode }).stdoutPath,
   stderrPath = getLaunchAgentPaths({ mode }).stderrPath,
 } = {}) {
@@ -89,6 +90,20 @@ export function buildLaunchAgentPlist({
     `</plist>`,
     ``,
   ].join("\n");
+}
+
+export function buildDefaultLaunchAgentPath(homeDir = os.homedir()) {
+  return [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    path.join(homeDir, ".local", "bin"),
+    path.join(homeDir, ".npm-global", "bin"),
+    path.join(homeDir, "bin"),
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+  ].join(":");
 }
 
 export async function writeLaunchAgentPlist(options = {}) {

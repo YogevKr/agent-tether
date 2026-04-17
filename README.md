@@ -129,6 +129,8 @@ Run the worker in the background and start it automatically at login on macOS:
 npm run install-launch-agent -- --mode worker
 ```
 
+The generated launch agent PATH includes Homebrew, system paths, and user-local bins such as `~/.local/bin`, so `codex` and `claude` can be found when they were installed outside the default launchd environment.
+
 Useful checks:
 
 ```bash
