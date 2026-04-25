@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   PROJECT_ROOT,
   getHostIdConfig,
+  getRuntimeConfig,
   getStateFile,
   getStateStoreConfig,
 } from "../src/config.js";
@@ -82,6 +83,20 @@ test("When RELAY_HOST_ID is set, then the explicit value wins without creating a
   } finally {
     restoreEnv("STATE_FILE", previousStateFile);
     restoreEnv("RELAY_HOST_ID", previousHostId);
+  }
+});
+
+test("When worker idle sleep is configured, then runtime config uses it", () => {
+  const previousWorkerIdleSleepMs = process.env.RELAY_WORKER_IDLE_SLEEP_MS;
+
+  try {
+    process.env.RELAY_WORKER_IDLE_SLEEP_MS = "9000";
+
+    const config = getRuntimeConfig();
+
+    assert.equal(config.workerIdleSleepMs, 9000);
+  } finally {
+    restoreEnv("RELAY_WORKER_IDLE_SLEEP_MS", previousWorkerIdleSleepMs);
   }
 });
 

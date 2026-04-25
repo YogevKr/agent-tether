@@ -44,6 +44,7 @@ async function main() {
         onError(error) {
           console.error("worker poll failed:", formatError(error));
         },
+        idleSleepMs: codexConfig.workerIdleSleepMs,
       })),
   );
 }
@@ -54,7 +55,7 @@ export async function runWorkerLane({
   sleep,
   onError = () => {},
   shouldContinue = () => true,
-  idleSleepMs = 1500,
+  idleSleepMs = 5000,
   errorSleepMs = 3000,
 } = {}) {
   while (shouldContinue()) {

@@ -4,6 +4,8 @@ import { applyHookEvent } from "./hook-index.js";
 import { createProgressState, formatProgressMessage } from "./relay-app.js";
 import { formatProviderName } from "./session-view.js";
 
+const HOST_HEARTBEAT_WRITE_INTERVAL_MS = 30_000;
+
 export function createHubServer({
   botConfig,
   codexConfig = null,
@@ -13,6 +15,8 @@ export function createHubServer({
   logger = console,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 }) {
+  const hostHeartbeatWrites = new Map();
+
   async function finalizeJob(jobId, payload) {
     const job = await store.getJob(jobId);
 
@@ -178,7 +182,7 @@ export function createHubServer({
         assertAuthorized(request, botConfig.hubToken);
         const payload = await readJson(request);
         const hostId = String(payload.hostId || "");
-        await store.upsertHost(hostId, {
+        await upsertHostHeartbeat(hostId, {
           label: payload.label || hostId,
           defaultCwd: payload.defaultCwd || "",
           roots: payload.roots || [],
@@ -296,6 +300,18 @@ export function createHubServer({
       sendJson(response, error.statusCode || 500, { error: error.message });
     }
   });
+
+  async function upsertHostHeartbeat(hostId, updates) {
+    const previousWriteAt = hostHeartbeatWrites.get(hostId) || 0;
+    const currentWriteAt = Date.now();
+
+    if (currentWriteAt - previousWriteAt < HOST_HEARTBEAT_WRITE_INTERVAL_MS) {
+      return;
+    }
+
+    hostHeartbeatWrites.set(hostId, currentWriteAt);
+    await store.upsertHost(hostId, updates);
+  }
 
   return {
     async start() {

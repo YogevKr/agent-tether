@@ -10,6 +10,7 @@ const EMPTY_STATE = {
 const DEFAULT_LOCK_TIMEOUT_MS = 30000;
 const DEFAULT_LOCK_RETRY_MS = 25;
 const DEFAULT_STALE_LOCK_MS = 10 * 60 * 1000;
+const MAX_SESSION_PREVIEW_CHARS = 4096;
 
 export class StateStore {
   constructor(filePath, {
@@ -687,6 +688,14 @@ export class StateStore {
   }
 
   async tryRemoveStaleLock() {
+    const owner = await this.readLockOwner();
+    const ownerPid = Number(owner?.pid);
+
+    if (Number.isInteger(ownerPid) && ownerPid > 0 && !isProcessRunning(ownerPid)) {
+      await fs.rm(this.lockPath, { recursive: true, force: true });
+      return true;
+    }
+
     try {
       const stats = await fs.stat(this.lockPath);
 
@@ -819,8 +828,8 @@ function normalizeSession(session) {
     provider: String(session.provider || "codex"),
     cwd: String(session.cwd || ""),
     model: String(session.model || ""),
-    latestAssistantMessage: String(session.latestAssistantMessage || ""),
-    latestUserPrompt: String(session.latestUserPrompt || ""),
+    latestAssistantMessage: truncatePreview(session.latestAssistantMessage),
+    latestUserPrompt: truncatePreview(session.latestUserPrompt),
     createdVia: String(session.createdVia || "local-cli"),
     createdAt: String(session.createdAt || new Date().toISOString()),
     updatedAt: String(session.updatedAt || session.createdAt || new Date().toISOString()),
@@ -963,6 +972,29 @@ function normalizeAttachmentKind(kind) {
   }
 
   return "document";
+}
+
+function truncatePreview(value, maxChars = MAX_SESSION_PREVIEW_CHARS) {
+  const text = String(value || "");
+
+  if (text.length <= maxChars) {
+    return text;
+  }
+
+  return `${text.slice(0, maxChars - 3)}...`;
+}
+
+function isProcessRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") {
+      return false;
+    }
+
+    return true;
+  }
 }
 
 function compareJobs(left, right) {

@@ -55,6 +55,7 @@ export function buildLaunchAgentPlist({
   pathEnv = buildDefaultLaunchAgentPath(homeDir),
   stdoutPath = getLaunchAgentPaths({ mode }).stdoutPath,
   stderrPath = getLaunchAgentPaths({ mode }).stderrPath,
+  throttleIntervalSeconds = 30,
 } = {}) {
   const config = getLaunchAgentModeConfig(mode);
 
@@ -77,6 +78,8 @@ export function buildLaunchAgentPlist({
     `  <true/>`,
     `  <key>KeepAlive</key>`,
     `  <true/>`,
+    `  <key>ThrottleInterval</key>`,
+    `  <integer>${Number(throttleIntervalSeconds)}</integer>`,
     `  <key>EnvironmentVariables</key>`,
     `  <dict>`,
     `    <key>PATH</key>`,

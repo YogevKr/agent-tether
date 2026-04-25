@@ -121,6 +121,60 @@ test("When upserting an indexed session, then existing topic binding is preserve
   assert.equal(session?.status, "bound");
 });
 
+test("When session previews are large, then state keeps bounded text", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-store-"));
+  const store = new StateStore(path.join(tempDir, "state.json"));
+  const longPrompt = "p".repeat(5000);
+  const longReply = "r".repeat(5000);
+
+  await store.saveSession({
+    id: "session-large-preview",
+    label: "Large preview",
+    cwd: "/repo",
+    latestUserPrompt: longPrompt,
+    latestAssistantMessage: longReply,
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+  });
+
+  const session = await store.getSession("session-large-preview");
+
+  assert.equal(session?.latestUserPrompt.length, 4096);
+  assert.equal(session?.latestAssistantMessage.length, 4096);
+  assert.equal(session?.latestUserPrompt.endsWith("..."), true);
+  assert.equal(session?.latestAssistantMessage.endsWith("..."), true);
+});
+
+test("When a lock owner process is gone, then the store recovers the lock", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-store-"));
+  const store = new StateStore(path.join(tempDir, "state.json"), {
+    lockTimeoutMs: 100,
+    staleLockMs: 60 * 60 * 1000,
+  });
+
+  await fs.mkdir(store.lockPath, { recursive: true });
+  await fs.writeFile(
+    path.join(store.lockPath, "owner.json"),
+    `${JSON.stringify({
+      token: "dead-owner",
+      pid: 999999999,
+      createdAt: "2026-04-02T10:00:00.000Z",
+    })}\n`,
+  );
+
+  await store.saveSession({
+    id: "session-dead-lock",
+    label: "Dead lock",
+    cwd: "/repo",
+    createdAt: "2026-04-02T10:00:00.000Z",
+    updatedAt: "2026-04-02T10:00:00.000Z",
+  });
+
+  const session = await store.getSession("session-dead-lock");
+
+  assert.equal(session?.id, "session-dead-lock");
+});
+
 test("When the primary state file moves, then legacy topic bindings still load and migrate on write", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "relay-store-"));
   const legacyPath = path.join(tempDir, "project", "data", "state.json");

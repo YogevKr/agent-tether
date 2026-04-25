@@ -81,6 +81,7 @@ export function getRuntimeConfig() {
     }),
     startRoots: getStartRoots(),
     workerConcurrency: parsePositiveInt(process.env.RELAY_WORKER_CONCURRENCY, 4),
+    workerIdleSleepMs: parsePositiveInt(process.env.RELAY_WORKER_IDLE_SLEEP_MS, 5000),
     hubUrl: process.env.RELAY_HUB_URL || "",
     hubToken: process.env.RELAY_HUB_TOKEN || "",
     hookMode: normalizeHookMode(process.env.RELAY_HOOK_MODE || "async"),

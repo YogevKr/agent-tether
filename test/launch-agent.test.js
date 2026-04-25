@@ -24,6 +24,7 @@ test("When generating the hub launch agent plist, then it starts the relay at lo
   assert.match(plist, new RegExp(`<string>${LAUNCH_AGENT_MODE.hub.label}</string>`));
   assert.match(plist, /<key>RunAtLoad<\/key>\s*<true\/>/);
   assert.match(plist, /<key>KeepAlive<\/key>\s*<true\/>/);
+  assert.match(plist, /<key>ThrottleInterval<\/key>\s*<integer>30<\/integer>/);
   assert.match(plist, /<string>\/usr\/bin\/env<\/string>/);
   assert.match(plist, /<string>\/opt\/homebrew\/bin\/node<\/string>/);
   assert.match(plist, /<string>\/Users\/example\/projects\/agent-tether\/src\/relay.js<\/string>/);
