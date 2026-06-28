@@ -53,12 +53,20 @@ export async function runClaudeTurn({
 
     child.on("close", (code) => {
       try {
-        const body = parseClaudeJson(stdout);
+        const body = parseClaudeJson(stdout, { stderr, code });
         const finalMessage = String(body.result || "").trim();
         const resolvedThreadId = String(body.session_id || threadId || "").trim();
 
         if (code !== 0 || body.is_error || body.subtype === "error") {
-          reject(new Error(stderr.trim() || finalMessage || "Claude Code exited without output."));
+          reject(
+            new Error(
+              formatClaudeFailure({
+                stderr,
+                code,
+                fallback: finalMessage || "Claude Code exited without output.",
+              }),
+            ),
+          );
           return;
         }
 
@@ -114,12 +122,74 @@ export function buildClaudeArgs({
   return args;
 }
 
-function parseClaudeJson(stdout) {
+function parseClaudeJson(stdout, { stderr = "", code = 0 } = {}) {
   const trimmed = String(stdout || "").trim();
 
   if (!trimmed) {
-    throw new Error("Claude Code finished without JSON output.");
+    throw new Error(
+      formatClaudeFailure({
+        stderr,
+        stdout,
+        code,
+        fallback:
+          code && code !== 0
+            ? `Claude Code exited with code ${code} without JSON output.`
+            : "Claude Code finished without JSON output.",
+      }),
+    );
   }
 
-  return JSON.parse(trimmed);
+  try {
+    return JSON.parse(trimmed);
+  } catch (error) {
+    throw new Error(
+      formatClaudeFailure({
+        stderr,
+        stdout,
+        code,
+        fallback: "Claude Code returned invalid JSON output.",
+      }),
+      { cause: error },
+    );
+  }
+}
+
+function formatClaudeFailure({ stderr = "", stdout = "", code = 0, fallback }) {
+  const stderrText = String(stderr || "").trim();
+  const stdoutText = String(stdout || "").trim();
+  const parts = [];
+
+  if (stderrText) {
+    parts.push(stderrText);
+  }
+
+  if (stdoutText) {
+    parts.push(`stdout:\n${previewText(stdoutText)}`);
+  }
+
+  if (stderrText) {
+    return parts.join("\n\n");
+  }
+
+  if (stdoutText && fallback) {
+    return [fallback, ...parts].join("\n\n");
+  }
+
+  if (fallback) {
+    return fallback;
+  }
+
+  return code && code !== 0
+    ? `Claude Code exited with code ${code}.`
+    : "Claude Code exited without output.";
+}
+
+function previewText(text, limit = 4000) {
+  const value = String(text || "").trim();
+
+  if (value.length <= limit) {
+    return value;
+  }
+
+  return `${value.slice(0, limit)}...`;
 }
